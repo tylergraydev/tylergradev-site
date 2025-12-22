@@ -62,6 +62,6 @@ export const skills = {
 
 export const socialLinks = {
   github: 'https://github.com/tylergraydev',
-  email: 'mailto:hello@tylergray.dev',
-  linkedin: 'https://linkedin.com/in/tylergraydev',
+  email: 'mailto:iam@tylergray.dev',
+  linkedin: 'https://www.linkedin.com/in/tyler-gray-043b8116/',
 }
