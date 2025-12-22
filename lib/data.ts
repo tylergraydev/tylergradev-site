@@ -53,10 +53,11 @@ export const hobbies: Hobby[] = [
 export const techStack = ['.NET', 'TypeScript', 'Angular', 'React', 'Svelete', 'Tailwind', 'Docker', 'Tauri', 'Rust']
 
 export const skills = {
-  languages: ['C#', 'TypeScript', 'JavaScript', 'Rust', 'SQL'],
-  frontend: ['Svelte', 'React', 'Tailwind', 'HTML/CSS'],
+  languages: ['C#', 'TypeScript', 'JavaScript', 'Python', 'Rust', 'SQL'],
+  frontend: ['Angular', 'Svelte', 'React', 'Tailwind', 'HTML/CSS'],
   backend: ['.NET', 'ASP.NET Core', 'Node.js', 'REST APIs'],
   tools: ['Git', 'Docker', 'Tauri', 'Unraid'],
+  ai: ['Claude', 'Ollama', 'MCP'],
 }
 
 export const socialLinks = {
