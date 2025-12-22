@@ -5,21 +5,21 @@
 @tailwind utilities;
 
 :root {
-  --bg-primary: #0d0d12;
-  --bg-secondary: #14141b;
-  --bg-card: #1a1a24;
-  --bg-elevated: #22222e;
-  --accent-cyan: #4fd1c5;
-  --accent-orange: #f6ad55;
-  --accent-purple: #9f7aea;
-  --accent-pink: #ed64a6;
-  --text-primary: #f7fafc;
-  --text-secondary: #a0aec0;
-  --text-muted: #718096;
-  --border-color: #2d3748;
-  --gradient-1: linear-gradient(135deg, #4fd1c5 0%, #9f7aea 100%);
-  --gradient-2: linear-gradient(135deg, #f6ad55 0%, #ed64a6 100%);
-  --grid-color: rgba(79, 209, 197, 0.03);
+  --bg-primary: #2e3440;
+  --bg-secondary: #3b4252;
+  --bg-card: #434c5e;
+  --bg-elevated: #4c566a;
+  --accent-cyan: #88c0d0;
+  --accent-orange: #d08770;
+  --accent-purple: #b48ead;
+  --accent-pink: #bf616a;
+  --text-primary: #eceff4;
+  --text-secondary: #d8dee9;
+  --text-muted: #a0a8b7;
+  --border-color: #4c566a;
+  --gradient-1: linear-gradient(135deg, #88c0d0 0%, #81a1c1 100%);
+  --gradient-2: linear-gradient(135deg, #d08770 0%, #bf616a 100%);
+  --grid-color: rgba(136, 192, 208, 0.03);
 }
 
 /* Vermeer Theme - Green & Yellow to match avatar */
