@@ -6,7 +6,6 @@ import {
   About,
   Contact,
   Footer,
-  ThemePicker,
 } from '@/components'
 
 export default function Home() {
@@ -21,7 +20,6 @@ export default function Home() {
         <Contact />
       </main>
       <Footer />
-      <ThemePicker />
     </>
   )
 }

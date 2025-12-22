@@ -18,7 +18,7 @@ export function Navigation() {
           className="font-mono text-xl font-bold text-accent-cyan flex items-center gap-2"
         >
           <span className="animate-blink">&gt;</span>
-          tylergray.dev
+          tylergray//dev
         </Link>
 
         <ul className="hidden md:flex gap-8">
