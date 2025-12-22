@@ -65,4 +65,5 @@ export const socialLinks = {
   github: 'https://github.com/tylergraydev',
   email: 'mailto:iam@tylergray.dev',
   linkedin: 'https://www.linkedin.com/in/tyler-gray-043b8116/',
+  kofi: 'https://ko-fi.com/tylergraydev',
 }

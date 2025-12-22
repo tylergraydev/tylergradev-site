@@ -1,11 +1,12 @@
 import Link from 'next/link'
-import { Github, Mail, Linkedin } from 'lucide-react'
+import { Github, Mail, Linkedin, Coffee } from 'lucide-react'
 import { socialLinks } from '@/lib/data'
 
 const contactItems = [
   { href: socialLinks.github, icon: Github, label: 'GitHub' },
   { href: socialLinks.email, icon: Mail, label: 'Email' },
   { href: socialLinks.linkedin, icon: Linkedin, label: 'LinkedIn' },
+  { href: socialLinks.kofi, icon: Coffee, label: 'Ko-fi' },
 ]
 
 export function Contact() {
