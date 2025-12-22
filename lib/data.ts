@@ -50,7 +50,7 @@ export const hobbies: Hobby[] = [
   { icon: '🖥️', title: 'Homelab', description: 'Unraid & self-hosting' },
 ]
 
-export const techStack = ['.NET', 'TypeScript', 'Svelte', 'Rust', 'Tauri']
+export const techStack = ['.NET', 'TypeScript', 'Angular', 'React', 'Svelete', 'Tailwind', 'Docker', 'Tauri', 'Rust']
 
 export const skills = {
   languages: ['C#', 'TypeScript', 'JavaScript', 'Rust', 'SQL'],

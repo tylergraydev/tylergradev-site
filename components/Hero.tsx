@@ -1,6 +1,6 @@
-import Image from 'next/image'
-import Link from 'next/link'
-import { techStack } from '@/lib/data'
+import Image from "next/image";
+import Link from "next/link";
+import { techStack } from "@/lib/data";
 
 export function Hero() {
   return (
@@ -16,8 +16,9 @@ export function Hero() {
               Hi, I&apos;m <span className="gradient-text">Tyler Gray</span>
             </h1>
             <p className="text-lg text-text-secondary mb-8 max-w-lg mx-auto lg:mx-0">
-              I build fun apps, developer tools, and constantly explore new tech.
-              Currently crafting solutions in the .NET and TypeScript ecosystems.
+              I build fun apps, developer tools, and constantly explore new
+              tech. Currently crafting solutions in the .NET and TypeScript
+              ecosystems.
             </p>
 
             {/* Tech Stack */}
@@ -55,14 +56,16 @@ export function Hero() {
             <div className="relative w-72 h-72 md:w-96 md:h-96">
               {/* Glow effect */}
               <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-64 h-64 bg-accent-cyan/15 rounded-full blur-3xl" />
-              
+
               {/* Animated border frame */}
-              <div className="absolute -inset-3 border-[3px] border-transparent rounded-2xl animate-rotate-border" 
+              <div
+                className="absolute -inset-3 border-[3px] border-transparent rounded-2xl animate-rotate-border"
                 style={{
-                  background: 'linear-gradient(var(--bg-primary), var(--bg-primary)) padding-box, var(--gradient-1) border-box'
+                  background:
+                    "linear-gradient(var(--bg-primary), var(--bg-primary)) padding-box, var(--gradient-1) border-box",
                 }}
               />
-              
+
               {/* Avatar image */}
               <div className="relative w-full h-full rounded-xl overflow-hidden">
                 <Image
@@ -76,18 +79,24 @@ export function Hero() {
 
               {/* Floating elements */}
               <div className="absolute top-[20%] -right-12 bg-bg-card border border-border px-4 py-2 rounded-lg font-mono text-sm text-text-secondary animate-float hidden lg:block">
-                7+ years
+                7+ years exp
               </div>
-              <div className="absolute bottom-[20%] -left-8 bg-bg-card border border-border px-4 py-2 rounded-lg font-mono text-sm text-text-secondary animate-float hidden lg:block" style={{ animationDelay: '1s' }}>
-                {'{ code }'}
+              <div
+                className="absolute bottom-[20%] -left-8 bg-bg-card border border-border px-4 py-2 rounded-lg font-mono text-sm text-text-secondary animate-float hidden lg:block"
+                style={{ animationDelay: "1s" }}
+              >
+                {"{ code }"}
               </div>
-              <div className="absolute top-[60%] -right-16 bg-bg-card border border-border px-4 py-2 rounded-lg font-mono text-sm text-text-secondary animate-float hidden lg:block" style={{ animationDelay: '2s' }}>
-                🚀 shipping
+              <div
+                className="absolute top-[60%] -right-16 bg-bg-card border border-border px-4 py-2 rounded-lg font-mono text-sm text-text-secondary animate-float hidden lg:block"
+                style={{ animationDelay: "2s" }}
+              >
+                🛠️ Dev Tools
               </div>
             </div>
           </div>
         </div>
       </div>
     </section>
-  )
+  );
 }
