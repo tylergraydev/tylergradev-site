@@ -54,10 +54,11 @@ export const techStack = ['.NET', 'TypeScript', 'Angular', 'React', 'Svelete', '
 
 export const skills = {
   languages: ['C#', 'TypeScript', 'JavaScript', 'Python', 'Rust', 'SQL'],
-  frontend: ['Angular', 'Svelte', 'React', 'Tailwind', 'HTML/CSS'],
-  backend: ['.NET', 'ASP.NET Core', 'Node.js', 'REST APIs'],
-  tools: ['Git', 'Docker', 'Tauri', 'Unraid'],
-  ai: ['Claude', 'Ollama', 'MCP'],
+  frontend: ['Angular', 'Svelte', 'React', 'Ionic', 'Tailwind', 'HTML/CSS'],
+  backend: ['.NET', 'ASP.NET Core', 'Node.js', 'REST APIs', 'OAuth', 'OIDC'],
+  tools: ['Tauri', 'Unraid'],
+  devops: ['Azure', 'DevOps', 'GitHub Actions', 'Docker', 'Git', 'CI/CD'],
+  ai: ['Claude', 'Copilot', 'Ollama', 'MCP', 'RAG', 'Embeddings', 'Vector DBs'],
 }
 
 export const socialLinks = {

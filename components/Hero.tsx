@@ -82,14 +82,14 @@ export function Hero() {
                 7+ years exp
               </div>
               <div
-                className="absolute bottom-[20%] -left-8 bg-bg-card border border-border px-4 py-2 rounded-lg font-mono text-sm text-text-secondary animate-float hidden lg:block"
-                style={{ animationDelay: "1s" }}
+                className="absolute top-[60%] -right-16 bg-bg-card border border-border px-4 py-2 rounded-lg font-mono text-sm text-text-secondary animate-float hidden lg:block"
+                style={{ animationDelay: "2s" }}
               >
                 {"{ code }"}
               </div>
               <div
-                className="absolute top-[60%] -right-16 bg-bg-card border border-border px-4 py-2 rounded-lg font-mono text-sm text-text-secondary animate-float hidden lg:block"
-                style={{ animationDelay: "2s" }}
+                className="absolute bottom-[20%] -left-8 bg-bg-card border border-border px-4 py-2 rounded-lg font-mono text-sm text-text-secondary animate-float hidden lg:block"
+                style={{ animationDelay: "1s" }}
               >
                 🛠️ Dev Tools
               </div>
