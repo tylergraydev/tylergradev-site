@@ -69,7 +69,7 @@ export const projects: Project[] = [
     description:
       'A business website for an online clothing reseller. Built as a clean, mobile-friendly storefront to showcase inventory and connect with customers.',
     icon: '👗',
-    tech: ['Next.js', 'React', 'Tailwind'],
+    tech: ['Next.js', 'React', 'Tailwind', 'Stripe', 'Postgres', 'Vercel'],
     links: {
       github: 'https://github.com/tylergraydev/charleston-nextjs',
       demo: 'https://charlestoncoastalcloset.com',
