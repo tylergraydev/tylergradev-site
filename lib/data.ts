@@ -64,6 +64,17 @@ export const projects: Project[] = [
       github: 'https://github.com/tylergraydev/ez-keyremapper',
     },
   },
+  {
+    title: 'Charleston Coastal Closet',
+    description:
+      'A business website for an online clothing reseller. Built as a clean, mobile-friendly storefront to showcase inventory and connect with customers.',
+    icon: '👗',
+    tech: ['Next.js', 'React', 'Tailwind'],
+    links: {
+      github: 'https://github.com/tylergraydev/charleston-nextjs',
+      demo: 'https://charlestoncoastalcloset.com',
+    },
+  },
 ]
 
 export interface Hobby {
