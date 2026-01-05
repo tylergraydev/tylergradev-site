@@ -34,6 +34,36 @@ export const projects: Project[] = [
       npm: 'https://www.npmjs.com/package/claude-limitline',
     },
   },
+  {
+    title: 'Lyrics Video Generator',
+    description:
+      'Create synchronized lyrics videos from audio files. Uses WhisperX AI for ~50ms word-level accuracy, features a visual timeline editor for manual adjustments, and supports 99+ languages. Export as MP4 at custom resolutions.',
+    icon: '🎵',
+    tech: ['Python', 'React', 'Flask', 'WhisperX', 'MoviePy', 'Tailwind'],
+    links: {
+      github: 'https://github.com/tylergraydev/lyrics-video-generator',
+    },
+  },
+  {
+    title: 'TGD Soundboard',
+    description:
+      'A desktop soundboard for streamers and content creators. Play audio clips with global hotkeys, organize sounds by category, and integrate directly with Streamlabs/OBS via Application Audio Capture — no virtual cables needed.',
+    icon: '🔊',
+    tech: ['C#', '.NET 8', 'WPF', 'NAudio', 'SQLite'],
+    links: {
+      github: 'https://github.com/tylergraydev/tgd-sound-board',
+    },
+  },
+  {
+    title: 'EZ Key Remapper',
+    description:
+      'Remap keyboard inputs from specific devices like macro pads without affecting your main keyboard. Features device auto-detection, a GUI for managing mappings, and runs silently in the system tray.',
+    icon: '⌨️',
+    tech: ['Python', 'PyQt5', 'Interception'],
+    links: {
+      github: 'https://github.com/tylergraydev/ez-keyremapper',
+    },
+  },
 ]
 
 export interface Hobby {
