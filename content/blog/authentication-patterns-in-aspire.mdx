@@ -1,0 +1,366 @@
+---
+title: "Authentication Patterns in Aspire: From JWT to OAuth2"
+description: "Comprehensive authentication strategies for distributed Aspire applications, covering JWT, OpenID Connect, service-to-service auth, and avoiding common pitfalls."
+date: "2025-12-23"
+author: "Tyler Gray"
+tags: [".NET", "Aspire", "Authentication", "JWT", "OAuth", "Security"]
+published: true
+icon: "🔐"
+---
+
+# Authentication Patterns in Aspire: From JWT to OAuth2
+
+Authentication in distributed systems is complex. You have multiple services, some public-facing, some internal. Users need to authenticate once and access everything. Services need to trust each other. Tokens expire. CORS gets in the way. And then there's the infamous **issuer URL mismatch** that burns hours of debugging.
+
+Today we'll build comprehensive authentication patterns for Aspire applications, covering JWT authentication, OpenID Connect, service-to-service auth, and—critically—how to avoid common pitfalls in distributed environments.
+
+## The Authentication Landscape
+
+In a typical Aspire app, you need:
+
+1. **User Authentication** - Users log in once
+2. **API Authorization** - APIs verify user tokens
+3. **Service-to-Service Auth** - Backend services trust each other
+4. **Token Management** - Refresh tokens, expiration handling
+5. **CORS Configuration** - Browsers don't block requests
+
+## Pattern 1: JWT Authentication
+
+### Setting Up the Auth Service
+
+```csharp
+// AuthService/Program.cs
+var builder = WebApplication.CreateBuilder(args);
+
+builder.AddServiceDefaults();
+
+builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+    .AddJwtBearer(options =>
+    {
+        options.TokenValidationParameters = new TokenValidationParameters
+        {
+            ValidateIssuer = true,
+            ValidateAudience = true,
+            ValidateLifetime = true,
+            ValidateIssuerSigningKey = true,
+            ValidIssuer = builder.Configuration["Jwt:Issuer"],
+            ValidAudience = builder.Configuration["Jwt:Audience"],
+            IssuerSigningKey = new SymmetricSecurityKey(
+                Encoding.UTF8.GetBytes(builder.Configuration["Jwt:Secret"]!))
+        };
+    });
+
+var app = builder.Build();
+
+app.MapPost("/auth/login", async (LoginRequest request) =>
+{
+    // Validate credentials (simplified)
+    if (request.Username == "admin" && request.Password == "password")
+    {
+        var token = GenerateJwtToken(request.Username);
+        return Results.Ok(new { token });
+    }
+
+    return Results.Unauthorized();
+});
+
+string GenerateJwtToken(string username)
+{
+    var securityKey = new SymmetricSecurityKey(
+        Encoding.UTF8.GetBytes(builder.Configuration["Jwt:Secret"]!));
+    var credentials = new SigningCredentials(securityKey, SecurityAlgorithms.HmacSha256);
+
+    var claims = new[]
+    {
+        new Claim(JwtRegisteredClaimNames.Sub, username),
+        new Claim(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString()),
+        new Claim(ClaimTypes.Name, username)
+    };
+
+    var token = new JwtSecurityToken(
+        issuer: builder.Configuration["Jwt:Issuer"],
+        audience: builder.Configuration["Jwt:Audience"],
+        claims: claims,
+        expires: DateTime.UtcNow.AddHours(1),
+        signingCredentials: credentials);
+
+    return new JwtSecurityTokenHandler().WriteToken(token);
+}
+
+app.Run();
+
+record LoginRequest(string Username, string Password);
+```
+
+### Protecting Your APIs
+
+```csharp
+// ApiService/Program.cs
+var builder = WebApplication.CreateBuilder(args);
+
+builder.AddServiceDefaults();
+
+builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+    .AddJwtBearer(options =>
+    {
+        options.Authority = builder.Configuration["Jwt:Issuer"];
+        options.Audience = builder.Configuration["Jwt:Audience"];
+
+        // Critical: Handle issuer URL mismatches
+        options.TokenValidationParameters = new TokenValidationParameters
+        {
+            ValidateIssuer = true,
+            ValidIssuers = new[]
+            {
+                builder.Configuration["Jwt:Issuer"]!,
+                builder.Configuration["Jwt:IssuerProduction"] // For prod
+            }
+        };
+    });
+
+builder.Services.AddAuthorization();
+
+var app = builder.Build();
+
+app.UseAuthentication();
+app.UseAuthorization();
+
+// Protected endpoint
+app.MapGet("/orders", async (ClaimsPrincipal user) =>
+{
+    var username = user.FindFirst(ClaimTypes.Name)?.Value;
+    return Results.Ok(new { message = $"Orders for {username}" });
+})
+.RequireAuthorization();
+
+app.Run();
+```
+
+### Aspire Configuration
+
+```csharp
+// AppHost/Program.cs
+var builder = DistributedApplication.CreateBuilder(args);
+
+var jwtSecret = builder.AddParameter("jwt-secret", secret: true);
+
+var authService = builder.AddProject<Projects.AuthService>("auth")
+    .WithEnvironment("Jwt__Secret", jwtSecret)
+    .WithEnvironment("Jwt__Issuer", "https://localhost:7001")
+    .WithEnvironment("Jwt__Audience", "my-api");
+
+var apiService = builder.AddProject<Projects.ApiService>("api")
+    .WithReference(authService)
+    .WithEnvironment("Jwt__Issuer", "https://localhost:7001")
+    .WithEnvironment("Jwt__Audience", "my-api");
+
+builder.Build().Run();
+```
+
+## Pattern 2: OpenID Connect / OAuth2
+
+### Using Identity Server
+
+```csharp
+builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+    .AddJwtBearer(options =>
+    {
+        options.Authority = "https://your-identity-server.com";
+        options.Audience = "my-api";
+
+        options.TokenValidationParameters = new TokenValidationParameters
+        {
+            ValidateAudience = true,
+            ValidTypes = new[] { "at+jwt" } // Accept only access tokens
+        };
+    });
+```
+
+### Azure AD Integration
+
+```csharp
+builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+    .AddMicrosoftIdentityWebApi(builder.Configuration.GetSection("AzureAd"));
+```
+
+## Pattern 3: Service-to-Service Authentication
+
+Backend services calling each other:
+
+```csharp
+// In ApiService calling OrderService
+builder.Services.AddHttpClient("OrderService", (sp, client) =>
+{
+    var orderServiceUrl = sp.GetRequiredService<IConfiguration>()
+        ["services:orderservice:http:0"]!;
+    client.BaseAddress = new Uri(orderServiceUrl);
+})
+.AddHttpMessageHandler<ServiceAuthHandler>();
+
+public class ServiceAuthHandler : DelegatingHandler
+{
+    protected override async Task<HttpResponseMessage> SendAsync(
+        HttpRequestMessage request,
+        CancellationToken cancellationToken)
+    {
+        // Add service-to-service auth token
+        var token = await GetServiceTokenAsync();
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+
+        return await base.SendAsync(request, cancellationToken);
+    }
+
+    private async Task<string> GetServiceTokenAsync()
+    {
+        // Generate or retrieve service token
+        return "service-token";
+    }
+}
+```
+
+## Common Pitfalls and Solutions
+
+### Pitfall 1: Issuer URL Mismatch
+
+**Problem:** Tokens issued by `http://localhost:7001` but validated against `https://localhost:7001`
+
+**Solution:**
+```csharp
+options.TokenValidationParameters = new TokenValidationParameters
+{
+    ValidIssuers = new[]
+    {
+        "http://localhost:7001",
+        "https://localhost:7001",
+        "https://api.production.com"
+    },
+    IssuerSigningKeyResolver = (token, securityToken, kid, parameters) =>
+    {
+        // Custom key resolution if needed
+        return keys;
+    }
+};
+```
+
+### Pitfall 2: CORS Issues
+
+```csharp
+builder.Services.AddCors(options =>
+{
+    options.AddDefaultPolicy(policy =>
+    {
+        var allowedOrigins = builder.Configuration
+            .GetSection("AllowedOrigins")
+            .Get<string[]>() ?? Array.Empty<string>();
+
+        policy.WithOrigins(allowedOrigins)
+              .AllowAnyMethod()
+              .AllowAnyHeader()
+              .AllowCredentials(); // Required for cookies/auth
+    });
+});
+
+app.UseCors(); // Before UseAuthentication()
+app.UseAuthentication();
+app.UseAuthorization();
+```
+
+### Pitfall 3: Token Expiration
+
+```typescript
+// Frontend: Auto-refresh tokens
+class AuthService {
+    private refreshTokenTimeout?: NodeJS.Timeout;
+
+    setSession(authResult: AuthResult) {
+        localStorage.setItem('access_token', authResult.accessToken);
+        localStorage.setItem('refresh_token', authResult.refreshToken);
+
+        this.scheduleTokenRefresh(authResult.expiresIn);
+    }
+
+    scheduleTokenRefresh(expiresIn: number) {
+        // Refresh 5 minutes before expiry
+        const timeout = (expiresIn - 300) * 1000;
+
+        this.refreshTokenTimeout = setTimeout(async () => {
+            await this.refreshToken();
+        }, timeout);
+    }
+
+    async refreshToken() {
+        const refreshToken = localStorage.getItem('refresh_token');
+        const response = await fetch('/auth/refresh', {
+            method: 'POST',
+            body: JSON.stringify({ refreshToken })
+        });
+
+        const newTokens = await response.json();
+        this.setSession(newTokens);
+    }
+}
+```
+
+## Production Considerations
+
+### Secrets Management
+
+```csharp
+// In AppHost for production
+if (builder.ExecutionContext.IsPublishMode)
+{
+    var jwtSecret = builder.AddParameter("jwt-secret", secret: true);
+    authService.WithEnvironment("Jwt__Secret", jwtSecret);
+}
+```
+
+### Token Validation Caching
+
+```csharp
+builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+    .AddJwtBearer(options =>
+    {
+        options.TokenValidationParameters = new TokenValidationParameters
+        {
+            // Cache signing keys for 24 hours
+            ConfigurationManager = new ConfigurationManager<OpenIdConnectConfiguration>(
+                "https://your-authority/.well-known/openid-configuration",
+                new OpenIdConnectConfigurationRetriever(),
+                new HttpDocumentRetriever { RequireHttps = true })
+            {
+                AutomaticRefreshInterval = TimeSpan.FromHours(24)
+            }
+        };
+    });
+```
+
+---
+
+**Quick Reference:**
+
+```csharp
+// JWT Authentication
+builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+    .AddJwtBearer(options =>
+    {
+        options.Authority = "https://auth-server";
+        options.Audience = "my-api";
+    });
+
+// Protect endpoints
+app.MapGet("/secure", () => "Protected")
+    .RequireAuthorization();
+
+// Get user claims
+app.MapGet("/user", (ClaimsPrincipal user) =>
+{
+    var userId = user.FindFirst("sub")?.Value;
+    return Results.Ok(new { userId });
+});
+
+// Service-to-service
+builder.Services.AddHttpClient<IOrderService, OrderService>()
+    .AddHttpMessageHandler<ServiceAuthHandler>();
+```
+
+Secure your Aspire apps properly. Authentication is hard, but these patterns will get you there.

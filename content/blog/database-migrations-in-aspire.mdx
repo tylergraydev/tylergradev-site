@@ -1,0 +1,391 @@
+---
+title: "Database Migrations in Aspire: From Dev to Production"
+description: "Master database migrations in .NET Aspire applications with EF Core, seed data strategies, and multi-tenant patterns that work from development to production."
+date: "2025-12-23"
+author: "Tyler Gray"
+tags: [".NET", "Aspire", "Database", "EF Core", "Migrations"]
+published: true
+icon: "💾"
+---
+
+# Database Migrations in Aspire: From Dev to Production
+
+You've built your Aspire application. Services are orchestrated, APIs are protected, and everything works beautifully on your machine. Then you deploy to production and realize: **the database schema doesn't exist**.
+
+Or worse—it exists, but it's three versions behind and your new code expects columns that aren't there.
+
+Today we'll solve database migrations in Aspire applications, covering EF Core migrations, seed data, startup migrations, and multi-tenant patterns.
+
+## The Database Migration Challenge
+
+In distributed systems, you need to:
+1. **Create schemas** on first deployment
+2. **Update schemas** when models change
+3. **Seed reference data** (countries, roles, etc.)
+4. **Handle version mismatches** between code and database
+5. **Coordinate migrations** across multiple services
+6. **Roll back** when deployments fail
+
+## Approach 1: EF Core Migrations (Recommended)
+
+### Setup
+
+```bash
+dotnet add package Microsoft.EntityFrameworkCore.Design
+dotnet add package Npgsql.EntityFrameworkCore.PostgreSQL
+```
+
+### Create Your DbContext
+
+```csharp
+public class AppDbContext : DbContext
+{
+    public AppDbContext(DbContextOptions<AppDbContext> options)
+        : base(options) { }
+
+    public DbSet<Order> Orders => Set<Order>();
+    public DbSet<Product> Products => Set<Product>();
+
+    protected override void OnModelCreating(ModelBuilder modelBuilder)
+    {
+        modelBuilder.Entity<Order>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.CreatedAt).HasDefaultValueSql("NOW()");
+            entity.HasIndex(e => e.UserId);
+        });
+    }
+}
+```
+
+### Creating Migrations
+
+```bash
+dotnet ef migrations add InitialCreate
+dotnet ef migrations add AddProductCategory
+```
+
+### Running Migrations in Aspire
+
+**Option 1: Automatic on Startup**
+
+```csharp
+var builder = WebApplication.CreateBuilder(args);
+
+builder.AddServiceDefaults();
+builder.AddNpgsqlDbContext<AppDbContext>("appdb");
+
+var app = builder.Build();
+
+// Run migrations on startup
+using (var scope = app.Services.CreateScope())
+{
+    var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+    await db.Database.MigrateAsync();
+}
+
+app.Run();
+```
+
+**Option 2: Dedicated Migration Project**
+
+```bash
+dotnet new worker -n MyApp.Migrator
+dotnet add package Microsoft.EntityFrameworkCore.Design
+```
+
+```csharp
+// Migrator/Worker.cs
+public class Worker : BackgroundService
+{
+    private readonly IServiceProvider _serviceProvider;
+    private readonly IHostApplicationLifetime _lifetime;
+
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    {
+        using var scope = _serviceProvider.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+
+        await db.Database.MigrateAsync(stoppingToken);
+
+        _lifetime.StopApplication(); // Exit after migration
+    }
+}
+```
+
+In AppHost:
+
+```csharp
+var postgres = builder.AddPostgres("postgres");
+var appdb = postgres.AddDatabase("appdb");
+
+// Run migrator first
+var migrator = builder.AddProject<Projects.MyApp_Migrator>("migrator")
+    .WithReference(appdb);
+
+// Then start API (waits for migrator to complete)
+var api = builder.AddProject<Projects.MyApp_Api>("api")
+    .WithReference(appdb)
+    .WaitFor(migrator);
+```
+
+## Seed Data Strategies
+
+### Strategy 1: EF Core Seeding
+
+```csharp
+protected override void OnModelCreating(ModelBuilder modelBuilder)
+{
+    modelBuilder.Entity<Role>().HasData(
+        new Role { Id = 1, Name = "Admin" },
+        new Role { Id = 2, Name = "User" }
+    );
+
+    modelBuilder.Entity<Country>().HasData(
+        new Country { Code = "US", Name = "United States" },
+        new Country { Code = "CA", Name = "Canada" }
+    );
+}
+```
+
+### Strategy 2: SQL Scripts
+
+```csharp
+public static class DatabaseSeeder
+{
+    public static async Task SeedAsync(AppDbContext context)
+    {
+        if (await context.Products.AnyAsync())
+            return; // Already seeded
+
+        var sql = await File.ReadAllTextAsync("SeedData/products.sql");
+        await context.Database.ExecuteSqlRawAsync(sql);
+    }
+}
+```
+
+### Strategy 3: Code-Based Seeding
+
+```csharp
+public static class DatabaseSeeder
+{
+    public static async Task SeedAsync(AppDbContext context)
+    {
+        if (!await context.Products.AnyAsync())
+        {
+            context.Products.AddRange(
+                new Product { Name = "Widget", Price = 9.99m },
+                new Product { Name = "Gadget", Price = 19.99m }
+            );
+            await context.SaveChangesAsync();
+        }
+    }
+}
+
+// In Program.cs
+using (var scope = app.Services.CreateScope())
+{
+    var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+    await db.Database.MigrateAsync();
+    await DatabaseSeeder.SeedAsync(db);
+}
+```
+
+## Production Patterns
+
+### Pattern 1: Separate Migration Job
+
+```csharp
+// AppHost - Production Mode
+if (builder.ExecutionContext.IsPublishMode)
+{
+    // Run migration as a separate job
+    var migratorJob = builder.AddProject<Projects.Migrator>("migrator")
+        .WithReference(appdb)
+        .WithReplicas(1); // Only 1 instance
+
+    // API waits for migration to complete
+    var api = builder.AddProject<Projects.Api>("api")
+        .WithReference(appdb)
+        .WaitFor(migratorJob)
+        .WithReplicas(3); // Multiple API instances
+}
+```
+
+### Pattern 2: Feature Flags for Schema Changes
+
+```csharp
+// When adding a new column that might not exist yet
+public class Order
+{
+    public int Id { get; set; }
+    public string Status { get; set; } = string.Empty;
+
+    // New column - might not exist in DB yet
+    public string? TrackingNumber { get; set; }
+}
+
+// In your service
+public async Task UpdateOrder(int id, string status)
+{
+    var order = await _context.Orders.FindAsync(id);
+    order.Status = status;
+
+    // Only set tracking number if column exists
+    if (_featureFlags.IsEnabled("TrackingNumbers"))
+    {
+        order.TrackingNumber = GenerateTrackingNumber();
+    }
+
+    await _context.SaveChangesAsync();
+}
+```
+
+### Pattern 3: Zero-Downtime Migrations
+
+```csharp
+// Step 1: Add new column as nullable
+dotnet ef migrations add AddEmailColumn
+
+// Deploy code that doesn't use the column yet
+
+// Step 2: Backfill data
+UPDATE users SET email = username + '@company.com' WHERE email IS NULL;
+
+// Step 3: Make column required
+dotnet ef migrations add MakeEmailRequired
+
+// Deploy code that requires the column
+```
+
+## Multi-Tenant Database Patterns
+
+### Pattern 1: Database Per Tenant
+
+```csharp
+public class TenantDbContextFactory
+{
+    private readonly IConfiguration _configuration;
+
+    public AppDbContext CreateDbContext(string tenantId)
+    {
+        var connectionString = _configuration[$"Tenants:{tenantId}:ConnectionString"];
+        var optionsBuilder = new DbContextOptionsBuilder<AppDbContext>();
+        optionsBuilder.UseNpgsql(connectionString);
+        return new AppDbContext(optionsBuilder.Options);
+    }
+}
+
+// Migrate all tenant databases
+foreach (var tenantId in GetAllTenantIds())
+{
+    using var dbContext = _factory.CreateDbContext(tenantId);
+    await dbContext.Database.MigrateAsync();
+}
+```
+
+### Pattern 2: Schema Per Tenant
+
+```csharp
+public class AppDbContext : DbContext
+{
+    private readonly string _schema;
+
+    public AppDbContext(DbContextOptions options, string schema)
+        : base(options)
+    {
+        _schema = schema;
+    }
+
+    protected override void OnModelCreating(ModelBuilder modelBuilder)
+    {
+        modelBuilder.HasDefaultSchema(_schema);
+        // Configure entities
+    }
+}
+```
+
+### Pattern 3: Shared Database with TenantId
+
+```csharp
+public class AppDbContext : DbContext
+{
+    private readonly string? _tenantId;
+
+    public AppDbContext(DbContextOptions options, IHttpContextAccessor httpContextAccessor)
+        : base(options)
+    {
+        _tenantId = httpContextAccessor.HttpContext?.User.FindFirst("tenantId")?.Value;
+    }
+
+    protected override void OnModelCreating(ModelBuilder modelBuilder)
+    {
+        modelBuilder.Entity<Order>().HasQueryFilter(e => e.TenantId == _tenantId);
+    }
+}
+```
+
+## Troubleshooting
+
+### Migration Conflicts
+
+```bash
+# Reset migrations (development only!)
+dotnet ef database drop
+dotnet ef migrations remove
+dotnet ef migrations add InitialCreate
+dotnet ef database update
+```
+
+### Pending Migrations Check
+
+```csharp
+public static async Task<bool> HasPendingMigrations(AppDbContext context)
+{
+    var pending = await context.Database.GetPendingMigrationsAsync();
+    return pending.Any();
+}
+```
+
+### Migration History
+
+```csharp
+var applied = await context.Database.GetAppliedMigrationsAsync();
+Console.WriteLine("Applied migrations:");
+foreach (var migration in applied)
+{
+    Console.WriteLine($"  - {migration}");
+}
+```
+
+---
+
+**Quick Reference:**
+
+```bash
+# Create migration
+dotnet ef migrations add MigrationName
+
+# Apply migrations
+dotnet ef database update
+
+# Rollback
+dotnet ef database update PreviousMigration
+
+# Generate SQL script
+dotnet ef migrations script > migration.sql
+```
+
+```csharp
+// Auto-migrate on startup
+using (var scope = app.Services.CreateScope())
+{
+    var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+    await db.Database.MigrateAsync();
+}
+
+// Seed data
+await DatabaseSeeder.SeedAsync(db);
+```
+
+Database migrations don't need to be scary. With these patterns, you'll ship schema changes confidently from dev to production.

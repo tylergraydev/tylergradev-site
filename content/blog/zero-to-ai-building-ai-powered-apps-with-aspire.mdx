@@ -1,0 +1,583 @@
+---
+title: "Zero to AI: Building AI-Powered Apps with Aspire"
+description: "Learn how to integrate OpenAI, Azure OpenAI, and RAG pipelines into your .NET Aspire applications with built-in observability and proper secrets management."
+date: "2025-12-23"
+author: "Tyler Gray"
+tags: [".NET", "Aspire", "AI", "OpenAI", "RAG"]
+published: true
+icon: "🤖"
+---
+
+# Zero to AI: Building AI-Powered Apps with Aspire
+
+In the [first post](/blog/what-is-dotnet-aspire-and-why-should-you-care), we covered what Aspire is. In the [second post](/blog/deploying-dotnet-aspire-apps-to-production), we deployed an Aspire app to production. Now let's talk about something exciting: **adding AI capabilities to your Aspire applications**.
+
+The AI revolution is here, and .NET developers need to integrate LLMs, embeddings, and semantic search into their apps. Aspire makes this surprisingly easy with built-in components for Azure OpenAI, OpenAI, and related services.
+
+Today we'll build a simple AI-powered feature, handle API keys properly, and get full observability into your AI calls—all with minimal configuration.
+
+## Why AI + Aspire?
+
+You might be thinking, "Can't I just install the OpenAI SDK and call it a day?" Sure. But Aspire gives you:
+
+1. **Automatic configuration management** - API keys and endpoints injected properly in dev and production
+2. **Built-in observability** - Every AI call traced in Application Insights
+3. **Health checks** - Know when your AI service is down
+4. **Resilience** - Retry policies and circuit breakers for flaky API calls
+5. **Local development** - Test against real AI services without deployment
+
+Let's see it in action.
+
+## Starting Point: Adding OpenAI to Your App
+
+We'll start with a simple Aspire app and add OpenAI chat capabilities. You can use either Azure OpenAI or OpenAI directly—Aspire supports both.
+
+### Option 1: Azure OpenAI (Recommended for Production)
+
+First, install the Aspire component in your AppHost:
+
+```bash
+cd MyAspireApp.AppHost
+dotnet add package Aspire.Hosting.Azure.CognitiveServices
+```
+
+In your `AppHost/Program.cs`:
+
+```csharp
+var builder = DistributedApplication.CreateBuilder(args);
+
+// Add Azure OpenAI
+var openai = builder.AddAzureOpenAI("openai");
+
+// Add your API with a reference to OpenAI
+var chatApi = builder.AddProject<Projects.ChatApi>("chatapi")
+    .WithReference(openai);
+
+builder.AddProject<Projects.WebApp>("webapp")
+    .WithReference(chatApi);
+
+builder.Build().Run();
+```
+
+When you run this locally, Aspire expects you to have Azure OpenAI configured. You'll need to set these in your user secrets:
+
+```bash
+cd ChatApi
+dotnet user-secrets set "ConnectionStrings:openai" "Endpoint=https://your-resource.openai.azure.com/;Key=your-api-key"
+```
+
+### Option 2: OpenAI Directly (Easier for Development)
+
+If you want to use OpenAI's API directly (no Azure required):
+
+```bash
+cd MyAspireApp.AppHost
+dotnet add package Aspire.Hosting.OpenAI
+```
+
+In your AppHost:
+
+```csharp
+var builder = DistributedApplication.CreateBuilder(args);
+
+// Add OpenAI
+var openai = builder.AddOpenAI("openai");
+
+var chatApi = builder.AddProject<Projects.ChatApi>("chatapi")
+    .WithReference(openai);
+
+builder.Build().Run();
+```
+
+Set your API key in user secrets:
+
+```bash
+cd ChatApi
+dotnet user-secrets set "ConnectionStrings:openai" "Key=sk-your-openai-api-key"
+```
+
+## Consuming OpenAI in Your Service
+
+Now in your actual service (e.g., `ChatApi`), install the client library:
+
+```bash
+cd ChatApi
+dotnet add package Azure.AI.OpenAI
+dotnet add package Aspire.Azure.AI.OpenAI
+```
+
+Add it to your services in `Program.cs`:
+
+```csharp
+var builder = WebApplication.CreateBuilder(args);
+
+// Add Aspire service defaults (health checks, telemetry, etc.)
+builder.AddServiceDefaults();
+
+// Add OpenAI client - Aspire handles configuration automatically
+builder.AddAzureOpenAIClient("openai");
+
+var app = builder.Build();
+app.MapDefaultEndpoints();
+
+// Your endpoints here...
+
+app.Run();
+```
+
+That's it for configuration. The connection string Aspire injected is automatically used by the OpenAI client.
+
+## Building a Simple Chat Endpoint
+
+Let's create a minimal API endpoint that uses OpenAI:
+
+```csharp
+using Azure.AI.OpenAI;
+using OpenAI.Chat;
+
+var builder = WebApplication.CreateBuilder(args);
+
+builder.AddServiceDefaults();
+builder.AddAzureOpenAIClient("openai");
+
+var app = builder.Build();
+app.MapDefaultEndpoints();
+
+app.MapPost("/chat", async (ChatRequest request, AzureOpenAIClient client) =>
+{
+    // Get a chat client for GPT-4
+    var chatClient = client.GetChatClient("gpt-4");
+
+    var messages = new List<ChatMessage>
+    {
+        new SystemChatMessage("You are a helpful assistant."),
+        new UserChatMessage(request.Message)
+    };
+
+    var response = await chatClient.CompleteChatAsync(messages);
+
+    return Results.Ok(new ChatResponse
+    {
+        Reply = response.Value.Content[0].Text
+    });
+});
+
+app.Run();
+
+record ChatRequest(string Message);
+record ChatResponse(string Reply);
+```
+
+Run your AppHost, and you now have a working AI-powered API. Call it:
+
+```bash
+curl -X POST https://localhost:7001/chat \
+  -H "Content-Type: application/json" \
+  -d '{"message": "What is .NET Aspire?"}'
+```
+
+You'll get back a response from GPT-4.
+
+## Adding Streaming Responses
+
+For a better UX, stream responses instead of waiting for the complete reply:
+
+```csharp
+app.MapPost("/chat/stream", async (ChatRequest request, AzureOpenAIClient client) =>
+{
+    var chatClient = client.GetChatClient("gpt-4");
+
+    var messages = new List<ChatMessage>
+    {
+        new SystemChatMessage("You are a helpful assistant."),
+        new UserChatMessage(request.Message)
+    };
+
+    var stream = chatClient.CompleteChatStreamingAsync(messages);
+
+    return Results.Stream(async (outputStream) =>
+    {
+        await using var writer = new StreamWriter(outputStream);
+
+        await foreach (var update in stream)
+        {
+            foreach (var contentPart in update.ContentUpdate)
+            {
+                await writer.WriteAsync(contentPart.Text);
+                await writer.FlushAsync();
+            }
+        }
+    });
+});
+```
+
+This streams tokens as they're generated, giving users instant feedback.
+
+## Building a RAG Pipeline (Retrieval-Augmented Generation)
+
+Let's level up and build a simple RAG system. We'll use embeddings to search a knowledge base and then generate answers using GPT-4.
+
+### Step 1: Add a Vector Database
+
+Aspire has a Qdrant component for vector search. Add it to your AppHost:
+
+```bash
+cd MyAspireApp.AppHost
+dotnet add package Aspire.Hosting.Qdrant
+```
+
+In your AppHost:
+
+```csharp
+var builder = DistributedApplication.CreateBuilder(args);
+
+var openai = builder.AddAzureOpenAI("openai");
+var qdrant = builder.AddQdrant("qdrant"); // Vector database
+
+var ragApi = builder.AddProject<Projects.RagApi>("ragapi")
+    .WithReference(openai)
+    .WithReference(qdrant);
+
+builder.Build().Run();
+```
+
+### Step 2: Install Qdrant Client in Your Service
+
+```bash
+cd RagApi
+dotnet add package Aspire.Qdrant.Client
+```
+
+Add it to your service:
+
+```csharp
+var builder = WebApplication.CreateBuilder(args);
+
+builder.AddServiceDefaults();
+builder.AddAzureOpenAIClient("openai");
+builder.AddQdrantClient("qdrant"); // Vector DB client
+
+var app = builder.Build();
+```
+
+### Step 3: Create Embeddings and Store Documents
+
+```csharp
+app.MapPost("/ingest", async (
+    IngestRequest request,
+    AzureOpenAIClient aiClient,
+    QdrantClient qdrantClient) =>
+{
+    // Create embedding client
+    var embeddingClient = aiClient.GetEmbeddingClient("text-embedding-3-small");
+
+    // Generate embedding for the document
+    var embedding = await embeddingClient.GenerateEmbeddingAsync(request.Content);
+    var vector = embedding.Value.ToFloats().ToArray();
+
+    // Store in Qdrant
+    await qdrantClient.UpsertAsync(
+        collectionName: "documents",
+        points: new[]
+        {
+            new PointStruct
+            {
+                Id = Guid.NewGuid().ToString(),
+                Vectors = vector,
+                Payload = new Dictionary<string, object>
+                {
+                    ["content"] = request.Content,
+                    ["title"] = request.Title
+                }
+            }
+        });
+
+    return Results.Ok(new { message = "Document ingested" });
+});
+
+record IngestRequest(string Title, string Content);
+```
+
+### Step 4: Query with RAG
+
+```csharp
+app.MapPost("/ask", async (
+    AskRequest request,
+    AzureOpenAIClient aiClient,
+    QdrantClient qdrantClient) =>
+{
+    var embeddingClient = aiClient.GetEmbeddingClient("text-embedding-3-small");
+    var chatClient = aiClient.GetChatClient("gpt-4");
+
+    // 1. Generate embedding for the question
+    var questionEmbedding = await embeddingClient.GenerateEmbeddingAsync(request.Question);
+    var queryVector = questionEmbedding.Value.ToFloats().ToArray();
+
+    // 2. Search for similar documents in Qdrant
+    var searchResults = await qdrantClient.SearchAsync(
+        collectionName: "documents",
+        vector: queryVector,
+        limit: 3);
+
+    // 3. Build context from search results
+    var context = string.Join("\n\n",
+        searchResults.Select(r => r.Payload["content"].ToString()));
+
+    // 4. Generate answer using GPT-4 with context
+    var messages = new List<ChatMessage>
+    {
+        new SystemChatMessage($"""
+            You are a helpful assistant. Answer questions based on the following context.
+            If the answer is not in the context, say so.
+
+            Context:
+            {context}
+            """),
+        new UserChatMessage(request.Question)
+    };
+
+    var response = await chatClient.CompleteChatAsync(messages);
+
+    return Results.Ok(new AskResponse
+    {
+        Answer = response.Value.Content[0].Text,
+        Sources = searchResults.Select(r => r.Payload["title"].ToString()).ToArray()
+    });
+});
+
+record AskRequest(string Question);
+record AskResponse(string Answer, string[] Sources);
+```
+
+Boom. You now have a RAG pipeline that:
+1. Embeds and stores documents
+2. Searches for relevant context
+3. Generates answers using GPT-4
+
+All with automatic observability and health checks.
+
+## Observability for AI Calls
+
+Remember how Aspire added OpenTelemetry automatically? Every AI call is traced. In your Aspire dashboard (local) or Application Insights (production), you'll see:
+
+- **Request duration** - How long each AI call took
+- **Token usage** - Input and output tokens
+- **Model used** - Which model handled the request
+- **Error rates** - Failed AI calls and why
+- **Cost tracking** - Estimate your API costs
+
+To add custom metrics:
+
+```csharp
+using System.Diagnostics.Metrics;
+
+var meter = new Meter("RagApi");
+var tokenCounter = meter.CreateCounter<int>("ai_tokens_used");
+
+// After an AI call
+tokenCounter.Add(response.Usage.TotalTokens, new TagList
+{
+    { "model", "gpt-4" },
+    { "operation", "chat" }
+});
+```
+
+This appears in Application Insights as a custom metric you can alert on.
+
+## Handling API Keys in Production
+
+For production deployments, don't hardcode API keys. Use one of these approaches:
+
+### Azure Key Vault (Recommended)
+
+In your AppHost:
+
+```csharp
+var builder = DistributedApplication.CreateBuilder(args);
+
+IResourceBuilder<AzureOpenAIResource> openai;
+
+if (builder.ExecutionContext.IsPublishMode)
+{
+    // In production, use Key Vault
+    var apiKey = builder.AddParameter("openai-api-key", secret: true);
+    openai = builder.AddAzureOpenAI("openai")
+        .WithParameter("ApiKey", apiKey);
+}
+else
+{
+    // In development, use user secrets
+    openai = builder.AddAzureOpenAI("openai");
+}
+
+var ragApi = builder.AddProject<Projects.RagApi>("ragapi")
+    .WithReference(openai);
+
+builder.Build().Run();
+```
+
+During `azd up`, you'll be prompted for the API key, and it's stored securely in Key Vault.
+
+### Managed Identity (Best for Azure)
+
+If deploying to Azure, use Managed Identity instead of API keys:
+
+```csharp
+var openai = builder.AddAzureOpenAI("openai")
+    .WithManagedIdentity(); // No API key needed!
+```
+
+Your Container App gets automatic access to Azure OpenAI without managing keys.
+
+## Cost Management
+
+AI APIs aren't free. Here's how to avoid surprise bills:
+
+### 1. Set Token Limits
+
+```csharp
+var options = new ChatCompletionOptions
+{
+    MaxTokens = 500, // Limit response length
+    Temperature = 0.7f
+};
+
+var response = await chatClient.CompleteChatAsync(messages, options);
+```
+
+### 2. Cache Responses
+
+For repeated questions, cache responses to avoid redundant API calls:
+
+```csharp
+using Microsoft.Extensions.Caching.Memory;
+
+app.MapPost("/ask", async (
+    AskRequest request,
+    AzureOpenAIClient aiClient,
+    IMemoryCache cache) =>
+{
+    var cacheKey = $"ask_{request.Question.GetHashCode()}";
+
+    if (cache.TryGetValue<string>(cacheKey, out var cachedAnswer))
+    {
+        return Results.Ok(new AskResponse { Answer = cachedAnswer });
+    }
+
+    // Generate answer...
+    var response = await chatClient.CompleteChatAsync(messages);
+    var answer = response.Value.Content[0].Text;
+
+    // Cache for 1 hour
+    cache.Set(cacheKey, answer, TimeSpan.FromHours(1));
+
+    return Results.Ok(new AskResponse { Answer = answer });
+});
+```
+
+### 3. Monitor Costs in Azure
+
+Set up budget alerts in Azure Cost Management. Track spending per resource and get notified when you exceed thresholds.
+
+### 4. Use Cheaper Models When Possible
+
+Not every task needs GPT-4. Use GPT-3.5-turbo for simpler queries:
+
+```csharp
+var chatClient = request.IsComplex
+    ? aiClient.GetChatClient("gpt-4")
+    : aiClient.GetChatClient("gpt-3.5-turbo"); // 10x cheaper
+```
+
+## Testing AI Features Locally
+
+Aspire makes local AI testing easy, but you're still hitting real APIs. For true offline testing, consider:
+
+### Option 1: Mock the AI Client
+
+```csharp
+#if DEBUG
+builder.Services.AddSingleton<AzureOpenAIClient>(new MockOpenAIClient());
+#else
+builder.AddAzureOpenAIClient("openai");
+#endif
+```
+
+### Option 2: Use Local AI Models
+
+Run models locally with Ollama:
+
+```bash
+cd MyAspireApp.AppHost
+dotnet add package Aspire.Hosting.Ollama
+```
+
+In your AppHost:
+
+```csharp
+var ollama = builder.AddOllama("ollama")
+    .WithModel("llama3");
+
+var ragApi = builder.AddProject<Projects.RagApi>("ragapi")
+    .WithReference(ollama);
+```
+
+Now your app uses a local LLM for development, and Azure OpenAI in production.
+
+## Advanced: Semantic Kernel Integration
+
+For more complex AI workflows, use Semantic Kernel with Aspire:
+
+```bash
+cd RagApi
+dotnet add package Microsoft.SemanticKernel
+```
+
+Register the kernel:
+
+```csharp
+builder.Services.AddKernel()
+    .AddAzureOpenAIChatCompletion("gpt-4", endpoint, apiKey);
+```
+
+Aspire's observability extends to Semantic Kernel—all plugin calls and function executions are traced.
+
+## What's Next?
+
+You now know how to:
+- Add OpenAI/Azure OpenAI to Aspire apps
+- Build chat and RAG features
+- Monitor AI usage and costs
+- Handle secrets securely
+- Test locally without burning through credits
+
+AI integration with Aspire is refreshingly straightforward. The observability alone is worth it—knowing exactly how your AI features perform in production is invaluable.
+
+In future posts, we could explore:
+- Advanced RAG patterns (re-ranking, hybrid search)
+- Fine-tuning models with Azure ML
+- Building AI agents with Semantic Kernel
+- Real-time AI features with SignalR + Aspire
+
+---
+
+**Quick Reference:**
+
+```bash
+# Add Azure OpenAI
+dotnet add package Aspire.Hosting.Azure.CognitiveServices
+
+# Add OpenAI
+dotnet add package Aspire.Hosting.OpenAI
+
+# Add Qdrant (vector DB)
+dotnet add package Aspire.Hosting.Qdrant
+
+# Add Ollama (local models)
+dotnet add package Aspire.Hosting.Ollama
+
+# In your service
+dotnet add package Aspire.Azure.AI.OpenAI
+```
+
+The AI revolution is here, and with Aspire, .NET developers can build intelligent applications without drowning in configuration. Go build something amazing.

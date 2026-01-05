@@ -1,0 +1,627 @@
+---
+title: "Mastering the .NET Aspire CLI: Beyond the AppHost"
+description: "Discover the power of the Aspire CLI for building, publishing, and deploying distributed applications with advanced workflows beyond just running the AppHost."
+date: "2025-12-23"
+author: "Tyler Gray"
+tags: [".NET", "Aspire", "CLI", "DevOps", "Kubernetes"]
+published: true
+icon: "⚙️"
+---
+
+# Mastering the .NET Aspire CLI: Beyond the AppHost
+
+So far in this series, we've been running our Aspire applications through the AppHost project with `dotnet run`. But there's another way to work with Aspire: **the Aspire CLI**.
+
+The Aspire CLI (`aspire` command) gives you more control over your distributed applications, enables new workflows, and unlocks features that aren't available when just running the AppHost. Today we'll explore what the CLI can do and when you should use it.
+
+## Installing the Aspire CLI
+
+The Aspire CLI comes with the Aspire workload, but let's make sure you have it:
+
+```bash
+dotnet workload install aspire
+```
+
+Verify it's installed:
+
+```bash
+aspire --version
+```
+
+You should see something like:
+
+```
+9.0.0+abcdef123
+```
+
+## What Can the CLI Do?
+
+The Aspire CLI has several commands:
+
+```bash
+aspire --help
+```
+
+```
+Usage: aspire [command] [options]
+
+Commands:
+  init        Initialize a new Aspire application
+  run         Run an Aspire application
+  build       Build container images for an Aspire application
+  publish     Generate deployment manifests
+  apply       Apply deployment manifests to a target environment
+```
+
+Let's explore each one.
+
+## `aspire init` - Scaffolding New Apps
+
+Instead of using `dotnet new aspire-starter`, you can use the CLI:
+
+```bash
+aspire init MyApp
+```
+
+This creates:
+- AppHost project
+- Service Defaults project
+- Optional starter projects (API, frontend)
+
+You can customize the template:
+
+```bash
+# Just the orchestration (no starter projects)
+aspire init MyApp --empty
+
+# With specific projects
+aspire init MyApp --with-api --with-frontend
+```
+
+This is particularly useful in scripts or when you want a more opinionated setup.
+
+## `aspire run` - Running Your Application
+
+This is where things get interesting. Instead of:
+
+```bash
+cd MyApp.AppHost
+dotnet run
+```
+
+You can use:
+
+```bash
+aspire run
+```
+
+From anywhere in your solution. The CLI automatically finds your AppHost project.
+
+### Key Benefits
+
+**1. Automatic Discovery**
+
+The CLI finds your AppHost without you needing to `cd` into it:
+
+```bash
+# From solution root
+aspire run
+
+# From any project folder
+cd MyApp.ApiService
+aspire run  # Still works!
+```
+
+**2. Environment Selection**
+
+Run against different environments easily:
+
+```bash
+aspire run --environment Staging
+aspire run --environment Production
+aspire run --environment Local
+```
+
+This sets `ASPNETCORE_ENVIRONMENT` and `DOTNET_ENVIRONMENT` for all services.
+
+**3. Selective Service Execution**
+
+Run only specific services:
+
+```bash
+# Only run the API and database, skip the frontend
+aspire run --services apiservice,postgres
+```
+
+This is great for development when you don't need everything running.
+
+**4. Port Overrides**
+
+Override ports without changing code:
+
+```bash
+aspire run --port 5000 --dashboard-port 18888
+```
+
+**5. Detached Mode**
+
+Run in the background:
+
+```bash
+aspire run --detach
+```
+
+Check running applications:
+
+```bash
+aspire ps
+```
+
+Stop them:
+
+```bash
+aspire stop
+```
+
+## `aspire build` - Building Container Images
+
+The `build` command creates container images for all your projects without running them:
+
+```bash
+aspire build
+```
+
+This:
+1. Analyzes your AppHost to find all projects
+2. Creates Dockerfiles (if they don't exist)
+3. Builds container images
+4. Tags them appropriately
+
+### Building for Production
+
+```bash
+aspire build --configuration Release
+```
+
+This builds optimized images with:
+- Release builds (not Debug)
+- Proper layer caching
+- Smaller image sizes
+
+### Targeting Specific Projects
+
+```bash
+aspire build --services apiservice,worker
+```
+
+### Custom Container Registry
+
+```bash
+aspire build --registry myregistry.azurecr.io
+```
+
+This tags images as:
+```
+myregistry.azurecr.io/apiservice:latest
+myregistry.azurecr.io/worker:latest
+```
+
+### Push After Build
+
+```bash
+aspire build --push --registry myregistry.azurecr.io
+```
+
+One command to build and push all images.
+
+## `aspire publish` - Generating Deployment Manifests
+
+This is huge. The `publish` command generates deployment manifests from your AppHost:
+
+```bash
+aspire publish --output ./manifests
+```
+
+This creates multiple manifest formats in the `./manifests` folder:
+
+```
+manifests/
+  ├── manifest.json          # Aspire manifest format
+  ├── docker-compose.yml     # Docker Compose
+  ├── k8s/                   # Kubernetes manifests
+  │   ├── apiservice.yaml
+  │   ├── postgres.yaml
+  │   └── redis.yaml
+  └── bicep/                 # Azure Bicep templates
+      ├── main.bicep
+      └── resources.bicep
+```
+
+### What Goes Into Manifests?
+
+The manifest includes:
+- All services and their dependencies
+- Environment variables
+- Port mappings
+- Volume mounts
+- Health checks
+- Resource requirements (CPU, memory)
+
+### Targeting Specific Formats
+
+```bash
+# Only Kubernetes
+aspire publish --format kubernetes --output ./k8s
+
+# Only Docker Compose
+aspire publish --format docker-compose --output ./compose
+
+# Only Bicep
+aspire publish --format bicep --output ./bicep
+```
+
+### Environment-Specific Manifests
+
+```bash
+aspire publish --environment Production --output ./manifests/prod
+aspire publish --environment Staging --output ./manifests/staging
+```
+
+This respects your `IsPublishMode` checks in the AppHost:
+
+```csharp
+if (builder.ExecutionContext.IsPublishMode)
+{
+    // Production-specific configuration
+    apiService.WithEnvironment("LOG_LEVEL", "Warning");
+}
+```
+
+## `aspire apply` - Deploying to Kubernetes
+
+Once you have manifests, you can deploy them:
+
+```bash
+# Generate and apply to current kubectl context
+aspire publish --format kubernetes --output ./k8s
+aspire apply --manifest ./k8s
+```
+
+Or in one command:
+
+```bash
+aspire apply --target kubernetes
+```
+
+This:
+1. Generates Kubernetes manifests
+2. Applies them to your current cluster
+3. Waits for rollout completion
+
+### Deploying to Specific Namespaces
+
+```bash
+aspire apply --target kubernetes --namespace my-app-prod
+```
+
+### Dry Run
+
+See what would be deployed without actually deploying:
+
+```bash
+aspire apply --target kubernetes --dry-run
+```
+
+### Watching Deployment Progress
+
+```bash
+aspire apply --target kubernetes --wait --timeout 5m
+```
+
+## Working with Manifest Files
+
+The manifest.json file is particularly powerful. It's a machine-readable representation of your entire application:
+
+```json
+{
+  "resources": {
+    "apiservice": {
+      "type": "project.v0",
+      "path": "../MyApp.ApiService/MyApp.ApiService.csproj",
+      "env": {
+        "OTEL_DOTNET_EXPERIMENTAL_OTLP_EMIT_EXCEPTION_LOG_ATTRIBUTES": "true",
+        "OTEL_DOTNET_EXPERIMENTAL_OTLP_EMIT_EVENT_LOG_ATTRIBUTES": "true"
+      },
+      "bindings": {
+        "http": {
+          "scheme": "http",
+          "protocol": "tcp",
+          "transport": "http"
+        },
+        "https": {
+          "scheme": "https",
+          "protocol": "tcp",
+          "transport": "http"
+        }
+      }
+    },
+    "postgres": {
+      "type": "postgres.server.v0",
+      "connectionString": "{postgres.connectionString}"
+    }
+  }
+}
+```
+
+### Why This Matters
+
+This manifest can be:
+1. **Version controlled** - Track infrastructure changes alongside code
+2. **Consumed by tools** - Build custom deployment pipelines
+3. **Validated** - Check for configuration errors before deployment
+4. **Diffed** - See what changed between versions
+
+### Custom Tooling
+
+You can build tools that read this manifest:
+
+```csharp
+using System.Text.Json;
+
+var manifestPath = args[0];
+var manifestJson = await File.ReadAllTextAsync(manifestPath);
+var manifest = JsonDocument.Parse(manifestJson);
+
+foreach (var resource in manifest.RootElement.GetProperty("resources").EnumerateObject())
+{
+    Console.WriteLine($"Resource: {resource.Name}");
+    Console.WriteLine($"Type: {resource.Value.GetProperty("type").GetString()}");
+}
+```
+
+## Advanced CLI Patterns
+
+### Pattern 1: Development Workflow
+
+```bash
+# Morning: Start everything
+aspire run --detach
+
+# Work on specific service
+cd MyApp.ApiService
+dotnet watch
+
+# Afternoon: Restart just one service
+aspire restart --services apiservice
+
+# End of day
+aspire stop
+```
+
+### Pattern 2: CI/CD Pipeline
+
+```bash
+#!/bin/bash
+# build-and-deploy.sh
+
+# Build all containers
+aspire build --configuration Release --registry myregistry.azurecr.io --push
+
+# Generate production manifests
+aspire publish --environment Production --format kubernetes --output ./k8s
+
+# Apply to production cluster (assumes kubectl is configured)
+kubectl apply -f ./k8s --namespace production
+```
+
+### Pattern 3: Local Testing with Production Config
+
+```bash
+# Generate production manifest
+aspire publish --environment Production --output ./manifests
+
+# Review what would be deployed
+cat ./manifests/manifest.json | jq .
+
+# Run locally with production configuration
+aspire run --environment Production
+```
+
+### Pattern 4: Multi-Environment Deployment
+
+```bash
+#!/bin/bash
+ENVIRONMENTS=("dev" "staging" "prod")
+
+for env in "${ENVIRONMENTS[@]}"; do
+  echo "Deploying to $env..."
+
+  aspire build --configuration Release --registry myregistry.azurecr.io
+  aspire publish --environment $env --format kubernetes --output ./k8s/$env
+
+  kubectl apply -f ./k8s/$env --namespace $env
+done
+```
+
+## CLI vs AppHost: When to Use What?
+
+### Use `dotnet run` on AppHost when:
+- Active development (fastest hot reload)
+- Debugging in Visual Studio/Rider
+- You want the IDE experience
+
+### Use `aspire run` when:
+- Working from command line
+- Running specific services only
+- Switching environments frequently
+- Running detached/background
+- CI/CD pipelines
+- Scripting workflows
+
+### Use `aspire publish` when:
+- Deploying to Kubernetes
+- Generating Docker Compose files
+- Creating infrastructure as code
+- Reviewing deployment configuration
+- Building custom deployment pipelines
+
+### Use `aspire build` when:
+- Pre-building images for faster startup
+- Testing container builds
+- Creating images for registry
+- CI/CD build pipelines
+
+## Configuration and Customization
+
+### Global Configuration
+
+The CLI respects configuration in `aspire.json`:
+
+```json
+{
+  "registry": "myregistry.azurecr.io",
+  "defaultEnvironment": "Development",
+  "build": {
+    "configuration": "Release",
+    "parallel": true
+  },
+  "publish": {
+    "format": "kubernetes"
+  }
+}
+```
+
+Place this in your solution root, and CLI commands use these defaults.
+
+### Environment Variables
+
+```bash
+export ASPIRE_REGISTRY=myregistry.azurecr.io
+export ASPIRE_ENVIRONMENT=Staging
+
+aspire build  # Uses environment variables
+```
+
+### Per-Service Configuration
+
+In your AppHost, you can add metadata that the CLI respects:
+
+```csharp
+var apiService = builder.AddProject<Projects.ApiService>("apiservice")
+    .WithAnnotation("aspire.build.skip", true);  // Don't build this service
+```
+
+## Troubleshooting
+
+### CLI Can't Find AppHost
+
+```bash
+aspire run
+# Error: Could not find AppHost project
+```
+
+**Solution:** Make sure you're in the solution directory or explicitly specify:
+
+```bash
+aspire run --project ./MyApp.AppHost/MyApp.AppHost.csproj
+```
+
+### Build Fails
+
+```bash
+aspire build
+# Error: Docker daemon not running
+```
+
+**Solution:** Start Docker Desktop or your Docker daemon.
+
+### Manifest Generation Issues
+
+```bash
+aspire publish --format kubernetes
+# Warning: Service 'xyz' has no health check defined
+```
+
+**Solution:** Add health checks in your AppHost:
+
+```csharp
+var apiService = builder.AddProject<Projects.ApiService>("apiservice")
+    .WithHealthCheck("http", "/health");
+```
+
+## Integration with Azure Developer CLI (azd)
+
+The Aspire CLI works seamlessly with `azd`:
+
+```bash
+# Initialize azd
+azd init
+
+# Uses aspire CLI under the hood
+azd up
+```
+
+When you run `azd deploy`, it:
+1. Uses `aspire build` to create images
+2. Uses `aspire publish` to generate Bicep
+3. Deploys to Azure
+
+You can customize this in `azure.yaml`:
+
+```yaml
+name: myapp
+services:
+  app:
+    project: ./MyApp.AppHost/MyApp.AppHost.csproj
+    language: dotnet
+    host: containerapp
+    hooks:
+      prebuild:
+        shell: sh
+        run: aspire build --configuration Release
+```
+
+## What's Next?
+
+The Aspire CLI is still evolving. Future versions may include:
+- `aspire logs` - Stream logs from all services
+- `aspire exec` - Execute commands in running containers
+- `aspire test` - Run integration tests
+- `aspire migrate` - Run database migrations
+
+Keep an eye on the [Aspire GitHub repo](https://github.com/dotnet/aspire) for updates.
+
+---
+
+**Quick Reference:**
+
+```bash
+# Initialize new app
+aspire init MyApp
+
+# Run application
+aspire run
+aspire run --environment Production
+aspire run --services api,db
+aspire run --detach
+
+# Build containers
+aspire build --configuration Release
+aspire build --registry myregistry.azurecr.io --push
+
+# Generate manifests
+aspire publish --output ./manifests
+aspire publish --format kubernetes
+aspire publish --environment Production
+
+# Deploy
+aspire apply --target kubernetes
+aspire apply --manifest ./k8s --namespace prod
+
+# Manage running apps
+aspire ps
+aspire stop
+aspire restart --services apiservice
+```
+
+The Aspire CLI gives you power and flexibility beyond just running `dotnet run`. Whether you're building deployment pipelines, generating infrastructure as code, or just want better control over your development environment, the CLI has you covered.

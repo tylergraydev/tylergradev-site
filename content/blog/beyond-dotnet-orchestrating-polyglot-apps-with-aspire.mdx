@@ -1,0 +1,763 @@
+---
+title: "Beyond .NET: Orchestrating Node.js, React, and Python Apps with Aspire"
+description: "Discover how .NET Aspire can orchestrate any containerized application—Node.js servers, React frontends, Python APIs—with full service discovery and observability."
+date: "2025-12-23"
+author: "Tyler Gray"
+tags: [".NET", "Aspire", "Node.js", "Python", "React", "Polyglot"]
+published: true
+icon: "🌐"
+---
+
+# Beyond .NET: Orchestrating Node.js, React, and Python Apps with Aspire
+
+If you've been following this series, you might think .NET Aspire is only for .NET applications. **Wrong.** Aspire can orchestrate any containerized application—Node.js servers, React frontends, Python APIs, Go services, whatever.
+
+This is huge for teams with polyglot stacks or when you need to integrate existing non-.NET services into your Aspire-managed infrastructure. Today we'll add Express servers, React apps, and Python FastAPI services to an Aspire application, with full service discovery, configuration management, and observability.
+
+## Why Mix .NET and Non-.NET?
+
+Real-world applications often use multiple languages:
+
+- **Legacy services** - Your Python data science API isn't getting rewritten in C#
+- **Best tool for the job** - React for frontend, .NET for backend, Python for ML
+- **Team expertise** - Let your JavaScript team build in JavaScript
+- **Existing infrastructure** - Integrate with Node.js microservices you already have
+
+Aspire doesn't force you into a .NET-only world. It's a **polyglot orchestrator** that happens to have excellent .NET support.
+
+## The Setup: A Polyglot E-commerce App
+
+Let's build a simple e-commerce system with:
+
+1. **Product API** - .NET Minimal API (catalog, search)
+2. **Recommendation Engine** - Python FastAPI (ML-based recommendations)
+3. **Pricing Service** - Node.js Express (dynamic pricing)
+4. **Frontend** - React + Vite (customer-facing UI)
+5. **PostgreSQL** - Database
+6. **Redis** - Cache
+
+Create the solution:
+
+```bash
+dotnet new aspire-starter -n PolyglotShop
+cd PolyglotShop
+```
+
+Now let's add the non-.NET pieces.
+
+## Adding a Node.js Express API
+
+First, create an Express service in your solution folder:
+
+```bash
+mkdir PricingService
+cd PricingService
+npm init -y
+npm install express
+```
+
+Create `server.js`:
+
+```javascript
+const express = require('express');
+const app = express();
+const port = process.env.PORT || 3000;
+
+app.use(express.json());
+
+// Simple dynamic pricing endpoint
+app.get('/api/pricing/:productId', (req, res) => {
+  const { productId } = req.params;
+  const basePrice = Math.random() * 100;
+  const discount = Math.random() * 0.3; // Up to 30% off
+
+  res.json({
+    productId,
+    basePrice: basePrice.toFixed(2),
+    discount: (discount * 100).toFixed(0) + '%',
+    finalPrice: (basePrice * (1 - discount)).toFixed(2)
+  });
+});
+
+app.get('/health', (req, res) => {
+  res.json({ status: 'healthy' });
+});
+
+app.listen(port, () => {
+  console.log(`Pricing service listening on port ${port}`);
+});
+```
+
+Add a `package.json` script:
+
+```json
+{
+  "name": "pricing-service",
+  "version": "1.0.0",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2"
+  }
+}
+```
+
+### Integrating with Aspire
+
+In your AppHost, install the npm support package:
+
+```bash
+cd PolyglotShop.AppHost
+dotnet add package Aspire.Hosting.NodeJs
+```
+
+Add it to your orchestration:
+
+```csharp
+var builder = DistributedApplication.CreateBuilder(args);
+
+var postgres = builder.AddPostgres("postgres");
+var catalogDb = postgres.AddDatabase("catalogdb");
+var redis = builder.AddRedis("cache");
+
+// Add the .NET Product API
+var productApi = builder.AddProject<Projects.ProductApi>("productapi")
+    .WithReference(catalogDb)
+    .WithReference(redis);
+
+// Add the Node.js Pricing Service
+var pricingService = builder.AddNpmApp("pricingservice", "../PricingService")
+    .WithNpmCommand("start")
+    .WithHttpEndpoint(port: 3000, env: "PORT")
+    .WithExternalHttpEndpoints();
+
+builder.Build().Run();
+```
+
+Run your AppHost and boom—your Node.js service starts automatically alongside your .NET services. The Aspire dashboard shows it, logs stream in real-time, and health checks work.
+
+### Service-to-Service Communication
+
+Now let's call the pricing service from the .NET Product API:
+
+```csharp
+// In ProductApi/Program.cs
+var builder = WebApplication.CreateBuilder(args);
+
+builder.AddServiceDefaults();
+builder.AddRedisClient("cache");
+
+// Add HTTP client for the pricing service
+builder.Services.AddHttpClient<PricingServiceClient>((sp, client) =>
+{
+    // Aspire automatically resolves "pricingservice" to the correct URL
+    var pricingUrl = sp.GetRequiredService<IConfiguration>()
+        ["services:pricingservice:http:0"]
+        ?? throw new InvalidOperationException("Pricing service URL not found");
+
+    client.BaseAddress = new Uri(pricingUrl);
+});
+
+var app = builder.Build();
+app.MapDefaultEndpoints();
+
+app.MapGet("/products/{id}", async (string id, PricingServiceClient pricingClient) =>
+{
+    var product = await GetProduct(id); // Your logic
+    var pricing = await pricingClient.GetPricingAsync(id);
+
+    return new
+    {
+        product.Id,
+        product.Name,
+        pricing.FinalPrice,
+        pricing.Discount
+    };
+});
+
+app.Run();
+
+class PricingServiceClient(HttpClient http)
+{
+    public async Task<PricingResponse> GetPricingAsync(string productId)
+    {
+        var response = await http.GetFromJsonAsync<PricingResponse>(
+            $"/api/pricing/{productId}");
+        return response!;
+    }
+}
+
+record PricingResponse(string ProductId, string BasePrice, string Discount, string FinalPrice);
+```
+
+Aspire handles service discovery automatically. The Node.js service URL is injected via configuration.
+
+## Adding a Python FastAPI Service
+
+Let's add a recommendation engine. Create a new folder:
+
+```bash
+mkdir RecommendationEngine
+cd RecommendationEngine
+```
+
+Create `main.py`:
+
+```python
+from fastapi import FastAPI
+from pydantic import BaseModel
+import random
+
+app = FastAPI()
+
+class RecommendationRequest(BaseModel):
+    user_id: str
+    product_id: str
+
+class Recommendation(BaseModel):
+    product_id: str
+    score: float
+    reason: str
+
+@app.post("/api/recommendations")
+async def get_recommendations(request: RecommendationRequest) -> list[Recommendation]:
+    # Dummy ML logic - in reality, you'd use a trained model
+    recommendations = []
+    for i in range(5):
+        recommendations.append(Recommendation(
+            product_id=f"PROD-{random.randint(1000, 9999)}",
+            score=random.random(),
+            reason=random.choice([
+                "Customers who bought this also bought",
+                "Based on your browsing history",
+                "Trending in your area"
+            ])
+        ))
+
+    return recommendations
+
+@app.get("/health")
+async def health():
+    return {"status": "healthy"}
+```
+
+Create `requirements.txt`:
+
+```txt
+fastapi==0.104.1
+uvicorn==0.24.0
+pydantic==2.5.0
+```
+
+Create a simple `Dockerfile`:
+
+```dockerfile
+FROM python:3.11-slim
+
+WORKDIR /app
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY . .
+
+EXPOSE 8000
+
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+```
+
+### Adding to Aspire
+
+In your AppHost:
+
+```csharp
+var builder = DistributedApplication.CreateBuilder(args);
+
+var postgres = builder.AddPostgres("postgres");
+var catalogDb = postgres.AddDatabase("catalogdb");
+var redis = builder.AddRedis("cache");
+
+var productApi = builder.AddProject<Projects.ProductApi>("productapi")
+    .WithReference(catalogDb)
+    .WithReference(redis);
+
+var pricingService = builder.AddNpmApp("pricingservice", "../PricingService")
+    .WithNpmCommand("start")
+    .WithHttpEndpoint(port: 3000, env: "PORT")
+    .WithExternalHttpEndpoints();
+
+// Add the Python recommendation engine
+var recommendationEngine = builder.AddDockerfile("recommendations", "../RecommendationEngine")
+    .WithHttpEndpoint(port: 8000, targetPort: 8000)
+    .WithExternalHttpEndpoints();
+
+builder.Build().Run();
+```
+
+The `AddDockerfile()` method builds and runs your Dockerfile automatically. Aspire rebuilds the image when files change.
+
+### Calling from .NET
+
+```csharp
+// In ProductApi
+builder.Services.AddHttpClient<RecommendationServiceClient>((sp, client) =>
+{
+    var recommendationUrl = sp.GetRequiredService<IConfiguration>()
+        ["services:recommendations:http:0"]!;
+    client.BaseAddress = new Uri(recommendationUrl);
+});
+
+// Endpoint
+app.MapGet("/products/{id}/recommendations", async (
+    string id,
+    RecommendationServiceClient recommendationClient) =>
+{
+    var recommendations = await recommendationClient.GetRecommendationsAsync(
+        userId: "user123",
+        productId: id);
+
+    return recommendations;
+});
+
+class RecommendationServiceClient(HttpClient http)
+{
+    public async Task<List<Recommendation>> GetRecommendationsAsync(
+        string userId,
+        string productId)
+    {
+        var response = await http.PostAsJsonAsync("/api/recommendations", new
+        {
+            user_id = userId,
+            product_id = productId
+        });
+
+        return await response.Content.ReadFromJsonAsync<List<Recommendation>>()
+            ?? new List<Recommendation>();
+    }
+}
+
+record Recommendation(string ProductId, float Score, string Reason);
+```
+
+Now your .NET API seamlessly talks to a Python ML service.
+
+## Adding a React Frontend
+
+Let's create a Vite + React app:
+
+```bash
+npm create vite@latest frontend -- --template react-ts
+cd frontend
+npm install
+```
+
+Update `vite.config.ts` to read the API URL from environment variables:
+
+```typescript
+import { defineConfig } from 'vite'
+import react from '@vitejs/plugin-react'
+
+export default defineConfig({
+  plugins: [react()],
+  server: {
+    port: parseInt(process.env.PORT || '5173'),
+    proxy: {
+      '/api': {
+        target: process.env.VITE_API_URL || 'http://localhost:5000',
+        changeOrigin: true
+      }
+    }
+  }
+})
+```
+
+Create a simple product list component in `src/App.tsx`:
+
+```typescript
+import { useEffect, useState } from 'react'
+import './App.css'
+
+interface Product {
+  id: string
+  name: string
+  finalPrice: string
+  discount: string
+}
+
+function App() {
+  const [products, setProducts] = useState<Product[]>([])
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    fetch('/api/products')
+      .then(res => res.json())
+      .then(data => {
+        setProducts(data)
+        setLoading(false)
+      })
+  }, [])
+
+  if (loading) return <div>Loading...</div>
+
+  return (
+    <div className="App">
+      <h1>PolyglotShop</h1>
+      <div className="product-grid">
+        {products.map(product => (
+          <div key={product.id} className="product-card">
+            <h3>{product.name}</h3>
+            <p className="price">${product.finalPrice}</p>
+            <p className="discount">{product.discount} off!</p>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+export default App
+```
+
+### Adding to Aspire
+
+```csharp
+var builder = DistributedApplication.CreateBuilder(args);
+
+var postgres = builder.AddPostgres("postgres");
+var catalogDb = postgres.AddDatabase("catalogdb");
+var redis = builder.AddRedis("cache");
+
+var productApi = builder.AddProject<Projects.ProductApi>("productapi")
+    .WithReference(catalogDb)
+    .WithReference(redis);
+
+var pricingService = builder.AddNpmApp("pricingservice", "../PricingService")
+    .WithNpmCommand("start")
+    .WithHttpEndpoint(port: 3000, env: "PORT")
+    .WithExternalHttpEndpoints();
+
+var recommendationEngine = builder.AddDockerfile("recommendations", "../RecommendationEngine")
+    .WithHttpEndpoint(port: 8000, targetPort: 8000)
+    .WithExternalHttpEndpoints();
+
+// Add the React frontend
+var frontend = builder.AddNpmApp("frontend", "../frontend")
+    .WithNpmCommand("dev")
+    .WithHttpEndpoint(port: 5173, env: "PORT")
+    .WithEnvironment("VITE_API_URL", productApi.GetEndpoint("http"))
+    .WithExternalHttpEndpoints();
+
+builder.Build().Run();
+```
+
+The key here is `WithEnvironment("VITE_API_URL", productApi.GetEndpoint("http"))` — this automatically passes the Product API URL to your Vite dev server.
+
+## Service Discovery Deep Dive
+
+You might have noticed we're using configuration keys like `services:pricingservice:http:0`. This is Aspire's service discovery in action.
+
+When you do:
+
+```csharp
+var pricingService = builder.AddNpmApp("pricingservice", "../PricingService")
+    .WithHttpEndpoint(port: 3000, env: "PORT");
+```
+
+Aspire automatically injects this configuration into all services:
+
+```json
+{
+  "services": {
+    "pricingservice": {
+      "http": {
+        "0": "http://localhost:3000"
+      }
+    }
+  }
+}
+```
+
+You can access this in .NET via `IConfiguration`, or pass it explicitly to non-.NET services via environment variables.
+
+### Passing Configuration to Non-.NET Services
+
+To make the Node.js pricing service call the .NET Product API:
+
+```csharp
+var pricingService = builder.AddNpmApp("pricingservice", "../PricingService")
+    .WithNpmCommand("start")
+    .WithHttpEndpoint(port: 3000, env: "PORT")
+    .WithEnvironment("PRODUCT_API_URL", productApi.GetEndpoint("http"))
+    .WithExternalHttpEndpoints();
+```
+
+Then in `server.js`:
+
+```javascript
+const productApiUrl = process.env.PRODUCT_API_URL || 'http://localhost:5000';
+
+app.get('/api/pricing/:productId', async (req, res) => {
+  const { productId } = req.params;
+
+  // Call the .NET Product API
+  const productResponse = await fetch(`${productApiUrl}/products/${productId}`);
+  const product = await productResponse.json();
+
+  // Calculate pricing based on product data
+  const discount = product.category === 'electronics' ? 0.2 : 0.1;
+
+  res.json({
+    productId,
+    basePrice: product.basePrice,
+    discount: (discount * 100) + '%',
+    finalPrice: (product.basePrice * (1 - discount)).toFixed(2)
+  });
+});
+```
+
+## Observability Across Languages
+
+Here's where Aspire shines. Even though you have services in multiple languages, **all telemetry flows to the same place**.
+
+### In the Aspire Dashboard
+
+Open `https://localhost:17024` and you'll see:
+
+- **Structured logs** from .NET, Node.js, and Python
+- **Distributed traces** showing requests flowing across services
+- **Metrics** from all applications
+- **Resource status** (containers, databases, etc.)
+
+### Adding OpenTelemetry to Node.js
+
+To get distributed tracing from your Express service:
+
+```bash
+cd PricingService
+npm install @opentelemetry/api @opentelemetry/sdk-node @opentelemetry/auto-instrumentations-node
+```
+
+Create `tracing.js`:
+
+```javascript
+const { NodeSDK } = require('@opentelemetry/sdk-node');
+const { getNodeAutoInstrumentations } = require('@opentelemetry/auto-instrumentations-node');
+const { OTLPTraceExporter } = require('@opentelemetry/exporter-trace-otlp-http');
+
+const sdk = new NodeSDK({
+  traceExporter: new OTLPTraceExporter({
+    url: process.env.OTEL_EXPORTER_OTLP_ENDPOINT || 'http://localhost:4318/v1/traces',
+  }),
+  instrumentations: [getNodeAutoInstrumentations()],
+});
+
+sdk.start();
+```
+
+Update `package.json`:
+
+```json
+{
+  "scripts": {
+    "start": "node -r ./tracing.js server.js"
+  }
+}
+```
+
+Aspire automatically configures the OTLP endpoint via environment variables. Now Node.js traces appear in the dashboard!
+
+### Adding OpenTelemetry to Python
+
+```bash
+cd RecommendationEngine
+pip install opentelemetry-api opentelemetry-sdk opentelemetry-instrumentation-fastapi opentelemetry-exporter-otlp
+```
+
+Update `main.py`:
+
+```python
+from opentelemetry import trace
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import BatchSpanProcessor
+from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+import os
+
+# Configure OpenTelemetry
+trace.set_tracer_provider(TracerProvider())
+otlp_exporter = OTLPSpanExporter(
+    endpoint=os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318/v1/traces")
+)
+trace.get_tracer_provider().add_span_processor(BatchSpanProcessor(otlp_exporter))
+
+app = FastAPI()
+
+# Auto-instrument FastAPI
+FastAPIInstrumentor.instrument_app(app)
+
+# Rest of your code...
+```
+
+Update `Dockerfile`:
+
+```dockerfile
+FROM python:3.11-slim
+
+WORKDIR /app
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Install OpenTelemetry packages
+RUN pip install opentelemetry-api opentelemetry-sdk \
+    opentelemetry-instrumentation-fastapi \
+    opentelemetry-exporter-otlp
+
+COPY . .
+
+EXPOSE 8000
+
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+```
+
+Now distributed traces span across .NET → Python → Node.js seamlessly!
+
+## Production Deployment
+
+When deploying with `azd up`, all services get containerized and deployed to Azure Container Apps—.NET and non-.NET alike.
+
+### For Node.js Apps
+
+Aspire automatically creates a `Dockerfile` for your npm apps if one doesn't exist:
+
+```dockerfile
+FROM node:18-alpine
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci --only=production
+COPY . .
+EXPOSE 3000
+CMD ["npm", "start"]
+```
+
+### For Python Apps
+
+Your Dockerfile is used as-is. Make sure it's production-ready (multi-stage builds, non-root user, etc.).
+
+### Environment Variables in Production
+
+In your AppHost, use `IsPublishMode` to set production-specific config:
+
+```csharp
+if (builder.ExecutionContext.IsPublishMode)
+{
+    pricingService.WithEnvironment("NODE_ENV", "production");
+    recommendationEngine.WithEnvironment("LOG_LEVEL", "warning");
+}
+```
+
+## Alternative: Pre-built Containers
+
+If you already have container images published to a registry:
+
+```csharp
+var existingService = builder.AddContainer("legacy-api", "myregistry.azurecr.io/legacy-api")
+    .WithTag("v2.1.0")
+    .WithHttpEndpoint(port: 8080, targetPort: 80)
+    .WithEnvironment("DATABASE_URL", postgres.GetConnectionString());
+```
+
+This works for any containerized service—Java, Go, Rust, whatever.
+
+## Common Patterns
+
+### Pattern 1: API Gateway in .NET
+
+Use a .NET API as a gateway to your polyglot services:
+
+```csharp
+app.MapGet("/products/{id}", async (
+    string id,
+    PricingServiceClient pricing,
+    RecommendationServiceClient recommendations) =>
+{
+    var productTask = GetProductAsync(id);
+    var pricingTask = pricing.GetPricingAsync(id);
+    var recommendationsTask = recommendations.GetRecommendationsAsync("user123", id);
+
+    await Task.WhenAll(productTask, pricingTask, recommendationsTask);
+
+    return new
+    {
+        Product = await productTask,
+        Pricing = await pricingTask,
+        Recommendations = await recommendationsTask
+    };
+});
+```
+
+### Pattern 2: Shared Database Access
+
+Multiple services can reference the same database:
+
+```csharp
+var postgres = builder.AddPostgres("postgres");
+var sharedDb = postgres.AddDatabase("shareddb");
+
+var productApi = builder.AddProject<Projects.ProductApi>("productapi")
+    .WithReference(sharedDb);
+
+var analyticsService = builder.AddDockerfile("analytics", "../AnalyticsService")
+    .WithReference(sharedDb); // Python service accessing same DB
+```
+
+### Pattern 3: Message Queue Integration
+
+Use RabbitMQ to connect services:
+
+```csharp
+var rabbitmq = builder.AddRabbitMQ("messaging");
+
+var productApi = builder.AddProject<Projects.ProductApi>("productapi")
+    .WithReference(rabbitmq);
+
+var notificationService = builder.AddNpmApp("notifications", "../NotificationService")
+    .WithEnvironment("RABBITMQ_URL", rabbitmq.GetConnectionString())
+    .WithNpmCommand("start");
+```
+
+## What's Next?
+
+You now know how to build truly polyglot applications with Aspire. The .NET ecosystem is powerful, but you're not locked in—use the best tool for each job while maintaining a unified development and deployment experience.
+
+Future post ideas:
+- **SignalR + React** - Real-time features across .NET and JavaScript
+- **gRPC across languages** - High-performance inter-service communication
+- **Blazor + Node.js** - Hybrid rendering strategies
+- **Dapr + Aspire** - Service mesh for polyglot microservices
+
+---
+
+**Quick Reference:**
+
+```csharp
+// Node.js/npm apps
+builder.AddNpmApp("myapp", "../MyApp")
+    .WithNpmCommand("start")
+    .WithHttpEndpoint(port: 3000, env: "PORT");
+
+// Python/any Dockerfile
+builder.AddDockerfile("myapp", "../MyApp")
+    .WithHttpEndpoint(port: 8000);
+
+// Pre-built containers
+builder.AddContainer("myapp", "myregistry.azurecr.io/myapp:latest")
+    .WithHttpEndpoint(port: 80);
+
+// Executables (Go, Rust, etc.)
+builder.AddExecutable("myapp", "go", "../MyApp", "run", "main.go")
+    .WithHttpEndpoint(port: 8080);
+```
+
+Aspire isn't just for .NET—it's for modern distributed applications, regardless of the stack. Go build something polyglot.

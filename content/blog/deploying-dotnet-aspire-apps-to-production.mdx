@@ -1,0 +1,516 @@
+---
+title: "Deploying .NET Aspire Apps to Production"
+description: "A comprehensive guide to deploying Aspire applications to Azure Container Apps, including secrets management, monitoring, and common deployment gotchas."
+date: "2025-12-23"
+author: "Tyler Gray"
+tags: [".NET", "Aspire", "Azure", "DevOps", "Deployment"]
+published: true
+icon: "☁️"
+---
+
+# Deploying .NET Aspire Apps to Production
+
+In the [previous post](/blog/what-is-dotnet-aspire-and-why-should-you-care), we explored what .NET Aspire is and why it makes local development so much better. But Aspire isn't just a local dev tool—it's designed from the ground up to make production deployments straightforward.
+
+Today, we'll walk through deploying an Aspire application to production, covering container registries, secrets management, and the inevitable gotchas you'll encounter along the way.
+
+## Deployment Options
+
+Aspire applications are fundamentally just containers and orchestration definitions. You can deploy them anywhere that runs containers:
+
+- **Azure Container Apps** - The easiest path, first-class Aspire support
+- **Kubernetes** - Via generated manifests
+- **Docker Compose** - For simpler deployments
+- **AWS ECS/Fargate** - With some manual configuration
+- **Any container platform** - Aspire generates standard containers
+
+For this post, we'll focus on **Azure Container Apps (ACA)** because it has the best Aspire integration and handles a lot of the complexity for you. But the concepts apply regardless of your deployment target.
+
+## Prerequisites
+
+Before deploying, you need:
+
+1. **Azure subscription** - [Free tier works](https://azure.microsoft.com/free/)
+2. **Azure Developer CLI (azd)** - `winget install microsoft.azd` or `brew install azd`
+3. **Azure CLI** - For manual tweaks
+4. **Docker** - For building container images
+5. **An Aspire app** - We'll use a simple multi-project app
+
+## The Aspire Deployment Story
+
+Here's what makes Aspire deployments nice: **the same orchestration code you use locally becomes your deployment manifest**. Your `AppHost/Program.cs` file already describes your architecture:
+
+```csharp
+var builder = DistributedApplication.CreateBuilder(args);
+
+var postgres = builder.AddPostgres("postgres")
+    .WithPgAdmin();
+var catalogDb = postgres.AddDatabase("catalogdb");
+var redis = builder.AddRedis("cache");
+
+var catalogApi = builder.AddProject<Projects.CatalogApi>("catalogapi")
+    .WithReference(catalogDb)
+    .WithReference(redis);
+
+builder.AddProject<Projects.WebApp>("webapp")
+    .WithReference(catalogApi);
+
+builder.Build().Run();
+```
+
+Aspire can read this and generate:
+- Bicep templates for Azure infrastructure
+- Kubernetes manifests
+- Docker Compose files
+
+Let's deploy this thing.
+
+## Step 1: Initialize Azure Developer CLI
+
+In your solution root (where your `.sln` file lives), run:
+
+```bash
+azd init
+```
+
+You'll be prompted:
+
+```
+? How do you want to initialize your app?
+  > Use code in the current directory
+```
+
+Then:
+
+```
+? Select an option
+  > Aspire Application (.NET Aspire)
+```
+
+Finally, give your app a name (lowercase, no spaces):
+
+```
+? Enter a name for your app: my-aspire-app
+```
+
+This creates an `azure.yaml` file and a `.azure` folder. The `azure.yaml` tells azd where your AppHost project is:
+
+```yaml
+name: my-aspire-app
+services:
+  app:
+    project: ./MyAspireApp.AppHost/MyAspireApp.AppHost.csproj
+    language: dotnet
+    host: containerapp
+```
+
+## Step 2: Provision and Deploy
+
+This is the magic part. One command:
+
+```bash
+azd up
+```
+
+You'll be prompted to:
+1. **Select an Azure subscription**
+2. **Choose a region** (pick one close to your users)
+3. **Confirm deployment**
+
+Then sit back and watch. `azd` will:
+
+1. Generate Bicep templates from your AppHost
+2. Create an Azure resource group
+3. Provision a Container Apps Environment
+4. Create a Container Registry
+5. Provision managed PostgreSQL and Redis instances
+6. Build Docker images for your projects
+7. Push images to the registry
+8. Deploy containers to Container Apps
+9. Configure networking and ingress
+10. Inject connection strings and environment variables
+
+This takes 5-10 minutes on the first run. Subsequent deployments are faster (2-3 minutes).
+
+When it's done, you'll see output like:
+
+```
+Deployed successfully!
+
+Endpoints:
+  webapp: https://webapp--my-aspire-app.happyplant-12345678.eastus.azurecontainerapps.io
+```
+
+Open that URL. Your app is live.
+
+## Step 3: Understanding What Was Created
+
+Let's peek under the hood. In the Azure Portal, you'll find:
+
+### Resource Group
+Everything lives in one resource group: `rg-my-aspire-app`
+
+### Container Apps Environment
+A shared environment for all your containers. This handles networking, logging, and secrets.
+
+### Container Apps (one per project)
+- `catalogapi` - Your API container
+- `webapp` - Your frontend container
+
+Each Container App has:
+- Auto-scaling rules (0-10 replicas by default)
+- Ingress configuration (internal for API, external for webapp)
+- Environment variables (connection strings injected automatically)
+- Managed identity for accessing Azure resources
+
+### Managed Services
+- **Azure Database for PostgreSQL** - Flexible Server
+- **Azure Cache for Redis** - Basic tier
+
+These are **not** containers. Aspire provisions actual managed services in production. In local dev, you got containers. In production, you get the real thing.
+
+### Container Registry
+All your Docker images are stored here: `crmy-aspire-app123.azurecr.io`
+
+## Secrets Management
+
+Here's where it gets interesting. In local dev, Aspire generates connection strings for you. In production, you need to manage secrets securely.
+
+### Option 1: Azure Key Vault (Recommended)
+
+Update your AppHost to use Key Vault:
+
+```csharp
+var builder = DistributedApplication.CreateBuilder(args);
+
+var postgres = builder.AddPostgres("postgres");
+var catalogDb = postgres.AddDatabase("catalogdb");
+
+// Reference a secret from Key Vault
+if (builder.ExecutionContext.IsPublishMode)
+{
+    catalogDb.WithEnvironment("ConnectionStrings__CatalogDb",
+        builder.AddParameter("catalog-db-connection", secret: true));
+}
+```
+
+Then during `azd up`, you'll be prompted for the secret, or you can set it in Key Vault manually.
+
+### Option 2: Container Apps Secrets
+
+You can also use Container Apps' built-in secret management:
+
+```bash
+az containerapp secret set \
+  --name catalogapi \
+  --resource-group rg-my-aspire-app \
+  --secrets db-password=SuperSecretPassword123
+```
+
+Then reference it in your environment variables.
+
+### Option 3: Azure App Configuration
+
+For non-secret configuration (feature flags, settings), use Azure App Configuration:
+
+```csharp
+var builder = DistributedApplication.CreateBuilder(args);
+
+builder.AddAzureAppConfiguration("appconfig");
+```
+
+This integrates with your existing `IConfiguration` in your services.
+
+## Environment-Specific Configuration
+
+You need different settings for dev, staging, and production. Here's how:
+
+### appsettings.Production.json
+
+In each project, create `appsettings.Production.json`:
+
+```json
+{
+  "Logging": {
+    "LogLevel": {
+      "Default": "Warning",
+      "Microsoft.AspNetCore": "Warning"
+    }
+  },
+  "AllowedHosts": "*"
+}
+```
+
+### Environment Variables in AppHost
+
+For production-specific overrides:
+
+```csharp
+var catalogApi = builder.AddProject<Projects.CatalogApi>("catalogapi")
+    .WithReference(catalogDb)
+    .WithReference(redis);
+
+if (builder.ExecutionContext.IsPublishMode)
+{
+    catalogApi.WithEnvironment("ASPNETCORE_ENVIRONMENT", "Production");
+    catalogApi.WithEnvironment("DetailedErrors", "false");
+}
+```
+
+### Using azd Environments
+
+You can have multiple environments:
+
+```bash
+# Create a staging environment
+azd env new staging
+
+# Deploy to staging
+azd deploy
+
+# Switch to production
+azd env select production
+
+# Deploy to production
+azd deploy
+```
+
+Each environment gets its own resource group and configuration.
+
+## Monitoring and Observability
+
+Remember how Aspire added OpenTelemetry automatically? In production, that data needs to go somewhere.
+
+### Application Insights (Automatic)
+
+When deploying to Azure, `azd` provisions Application Insights by default. Your telemetry data flows there automatically.
+
+In the Azure Portal:
+- **Application Insights** > **Transaction search** - See distributed traces
+- **Application Insights** > **Failures** - Exception details
+- **Application Insights** > **Performance** - Slow requests
+- **Application Insights** > **Live Metrics** - Real-time monitoring
+
+### Viewing Logs
+
+```bash
+# Stream logs from a specific container app
+az containerapp logs show \
+  --name catalogapi \
+  --resource-group rg-my-aspire-app \
+  --follow
+
+# Or use azd
+azd monitor
+```
+
+### Custom Metrics
+
+Since OpenTelemetry is configured, you can add custom metrics:
+
+```csharp
+var meter = new Meter("CatalogApi");
+var orderCounter = meter.CreateCounter<int>("orders_created");
+
+// In your code
+orderCounter.Add(1);
+```
+
+These automatically appear in Application Insights.
+
+## Common Gotchas (And How to Fix Them)
+
+### 1. Issuer URL Mismatches (Authentication)
+
+If you're using OpenID Connect or JWT authentication, your issuer URLs will differ between local and production.
+
+**Problem:**
+```csharp
+builder.Services.AddAuthentication()
+    .AddJwtBearer(options =>
+    {
+        options.Authority = "https://localhost:7001"; // Works locally, fails in production
+    });
+```
+
+**Solution:**
+
+```csharp
+var authority = builder.Configuration["Authentication:Authority"]
+    ?? throw new InvalidOperationException("Authority not configured");
+
+builder.Services.AddAuthentication()
+    .AddJwtBearer(options =>
+    {
+        options.Authority = authority;
+    });
+```
+
+Then set via environment variable in AppHost:
+
+```csharp
+if (builder.ExecutionContext.IsPublishMode)
+{
+    catalogApi.WithEnvironment("Authentication__Authority",
+        "https://catalogapi--my-aspire-app.eastus.azurecontainerapps.io");
+}
+```
+
+### 2. Container App Scales to Zero
+
+By default, Container Apps can scale to 0 replicas to save money. This means the first request after idle time will be slow (cold start).
+
+**Fix:** Set minimum replicas:
+
+In your AppHost:
+
+```csharp
+catalogApi.WithReplicas(1, 10); // Min 1, max 10 replicas
+```
+
+### 3. CORS Issues
+
+Your frontend runs on a different domain than your API in production.
+
+**Fix:** Configure CORS properly:
+
+```csharp
+builder.Services.AddCors(options =>
+{
+    options.AddDefaultPolicy(policy =>
+    {
+        var allowedOrigins = builder.Configuration
+            .GetSection("AllowedOrigins")
+            .Get<string[]>() ?? Array.Empty<string>();
+
+        policy.WithOrigins(allowedOrigins)
+            .AllowAnyMethod()
+            .AllowAnyHeader()
+            .AllowCredentials();
+    });
+});
+```
+
+Set origins in AppHost:
+
+```csharp
+if (builder.ExecutionContext.IsPublishMode)
+{
+    catalogApi.WithEnvironment("AllowedOrigins__0",
+        "https://webapp--my-aspire-app.eastus.azurecontainerapps.io");
+}
+```
+
+### 4. Database Connection Pooling
+
+PostgreSQL/SQL Server have connection limits. In production, you might hit them.
+
+**Fix:** Configure connection pooling in your connection string:
+
+```csharp
+var postgres = builder.AddPostgres("postgres");
+var catalogDb = postgres.AddDatabase("catalogdb");
+
+if (builder.ExecutionContext.IsPublishMode)
+{
+    catalogDb.WithAnnotation("connection-pooling", new
+    {
+        MaxPoolSize = 100,
+        MinPoolSize = 10
+    });
+}
+```
+
+### 5. Forgetting to Publish PublishMode Assets
+
+Some resources (like Key Vault) only get created in publish mode.
+
+**Test publish mode locally:**
+
+```bash
+dotnet run --project ./AppHost/AppHost.csproj --publisher manifest --output-path ../aspire-manifest.json
+```
+
+This generates the manifest without actually deploying. Review it to see what will be created.
+
+## Updating Your App
+
+Deploying updates is simple:
+
+```bash
+azd deploy
+```
+
+This rebuilds changed containers and performs a rolling update with zero downtime.
+
+### Rolling Back
+
+If something goes wrong:
+
+```bash
+# List previous revisions
+az containerapp revision list \
+  --name catalogapi \
+  --resource-group rg-my-aspire-app
+
+# Activate a previous revision
+az containerapp revision activate \
+  --name catalogapi \
+  --resource-group rg-my-aspire-app \
+  --revision catalogapi--abc123
+```
+
+## Cost Optimization
+
+Here's what you're paying for:
+
+- **Container Apps** - Pay for what you use (vCPU-seconds and memory)
+- **PostgreSQL/Redis** - Managed services (most expensive part)
+- **Container Registry** - Storage + bandwidth
+- **Application Insights** - Data ingestion
+
+**Tips to save money:**
+1. Use Basic tier for Redis (vs Standard)
+2. Use Burstable tier for PostgreSQL (vs General Purpose)
+3. Scale Container Apps to 0 in non-production environments
+4. Use azd environments to easily delete entire staging/dev setups
+
+```bash
+# Delete an environment completely
+azd down --purge
+```
+
+## What's Next?
+
+You now know how to deploy Aspire apps to production with proper secrets management, monitoring, and environment configuration.
+
+In the next post, we'll explore building AI-powered applications with Aspire—from adding Azure OpenAI to your app to implementing a full RAG pipeline with observability.
+
+---
+
+**Quick Reference:**
+
+```bash
+# Initialize Aspire deployment
+azd init
+
+# Deploy everything
+azd up
+
+# Deploy code changes only
+azd deploy
+
+# View logs
+azd monitor
+
+# Delete everything
+azd down --purge
+
+# Create new environment
+azd env new <name>
+
+# Switch environments
+azd env select <name>
+```
+
+The beauty of Aspire is that deployment isn't an afterthought—it's baked into the development experience from day one. Your local development environment _is_ your deployment manifest.

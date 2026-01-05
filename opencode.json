@@ -1,0 +1,16 @@
+{
+  "mcp": {
+    "Context7": {
+      "type": "local",
+      "command": [
+        "npx",
+        "-y",
+        "@upstash/context7-mcp",
+        "--api-key",
+        "ctx7sk-50a9c97a-2988-4d26-ace6-3adc2557729f"
+      ],
+      "enabled": true
+    }
+  },
+  "$schema": "https://opencode.ai/config.json"
+}

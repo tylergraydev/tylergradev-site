@@ -1,0 +1,319 @@
+---
+title: "Testing Aspire Applications: From Unit Tests to End-to-End"
+description: "Build a comprehensive testing strategy for distributed Aspire applications with unit tests, integration tests, and end-to-end testing patterns that work in production."
+date: "2025-12-23"
+author: "Tyler Gray"
+tags: [".NET", "Aspire", "Testing", "Integration Tests", "xUnit"]
+published: true
+icon: "🧪"
+---
+
+# Testing Aspire Applications: From Unit Tests to End-to-End
+
+Testing distributed applications is hard. You have multiple services, databases, message queues, caches, and a web of dependencies. Aspire makes running these systems easier, but how do you test them properly?
+
+Today we'll build a comprehensive testing strategy for Aspire applications, covering unit tests, integration tests, and end-to-end tests. We'll explore Aspire's built-in testing capabilities, compare them to alternatives like Testcontainers, and show you patterns that actually work in production.
+
+## The Testing Pyramid for Aspire Apps
+
+```
+        /\
+       /E2E\        ← Few, slow, expensive
+      /------\
+     /  API  \      ← Some, moderate speed
+    /----------\
+   / Unit Tests \   ← Many, fast, cheap
+  /--------------\
+```
+
+For Aspire apps:
+- **Unit Tests**: Test business logic in isolation
+- **Integration Tests**: Test services with real dependencies (databases, caches)
+- **API Tests**: Test HTTP endpoints with Aspire orchestration
+- **E2E Tests**: Test full user workflows across all services
+
+## Unit Testing: The Foundation
+
+Unit tests remain the same—test your business logic without infrastructure:
+
+```csharp
+public class OrderServiceTests
+{
+    [Fact]
+    public void CalculateTotal_AppliesDiscount_Correctly()
+    {
+        var service = new OrderService();
+        var order = new Order { Subtotal = 100, DiscountPercent = 10 };
+
+        var total = service.CalculateTotal(order);
+
+        Assert.Equal(90, total);
+    }
+}
+```
+
+Nothing Aspire-specific here. Keep these fast and focused.
+
+## Integration Testing with Aspire
+
+This is where Aspire shines. Test your services with real infrastructure.
+
+### Setting Up the Test Project
+
+```bash
+dotnet new xunit -n MyApp.Tests
+dotnet add package Aspire.Hosting.Testing
+dotnet add package Microsoft.AspNetCore.Mvc.Testing
+```
+
+### Creating a Test AppHost
+
+```csharp
+using Aspire.Hosting;
+using Aspire.Hosting.Testing;
+
+public class IntegrationTestFixture : IAsyncLifetime
+{
+    private DistributedApplication? _app;
+    public DistributedApplication App => _app!;
+
+    public async Task InitializeAsync()
+    {
+        var builder = await DistributedApplicationTestingBuilder.CreateAsync<Projects.MyApp_AppHost>();
+
+        _app = await builder.BuildAsync();
+        await _app.StartAsync();
+    }
+
+    public async Task DisposeAsync()
+    {
+        if (_app != null)
+        {
+            await _app.DisposeAsync();
+        }
+    }
+}
+```
+
+### Writing Integration Tests
+
+```csharp
+public class ApiIntegrationTests : IClassFixture<IntegrationTestFixture>
+{
+    private readonly IntegrationTestFixture _fixture;
+
+    public ApiIntegrationTests(IntegrationTestFixture fixture)
+    {
+        _fixture = fixture;
+    }
+
+    [Fact]
+    public async Task CreateOrder_SavesToDatabase_ReturnsOrderId()
+    {
+        // Arrange
+        var httpClient = _fixture.App.CreateHttpClient("api");
+
+        // Act
+        var response = await httpClient.PostAsJsonAsync("/orders", new
+        {
+            ProductId = "PROD-123",
+            Quantity = 2
+        });
+
+        // Assert
+        response.EnsureSuccessStatusCode();
+        var result = await response.Content.ReadFromJsonAsync<CreateOrderResponse>();
+        Assert.NotNull(result?.OrderId);
+    }
+}
+```
+
+### Testing with Real Dependencies
+
+```csharp
+[Fact]
+public async Task OrderService_StoresInPostgres_AndCachesInRedis()
+{
+    var httpClient = _fixture.App.CreateHttpClient("api");
+
+    // Create order
+    var createResponse = await httpClient.PostAsJsonAsync("/orders", new
+    {
+        ProductId = "PROD-123",
+        Quantity = 1
+    });
+
+    var order = await createResponse.Content.ReadFromJsonAsync<Order>();
+
+    // Verify it's cached (should be fast on second call)
+    var sw = Stopwatch.StartNew();
+    var getResponse = await httpClient.GetAsync($"/orders/{order.Id}");
+    sw.Stop();
+
+    Assert.True(sw.ElapsedMilliseconds < 50, "Should be served from cache");
+}
+```
+
+## Testing Patterns
+
+### Pattern 1: Test Data Cleanup
+
+```csharp
+public class DatabaseTestBase : IAsyncLifetime
+{
+    protected NpgsqlConnection? Connection;
+
+    public async Task InitializeAsync()
+    {
+        Connection = new NpgsqlConnection(/* connection string */);
+        await Connection.OpenAsync();
+    }
+
+    public async Task DisposeAsync()
+    {
+        // Clean up test data
+        await Connection.ExecuteAsync("TRUNCATE TABLE orders CASCADE");
+        await Connection.DisposeAsync();
+    }
+}
+```
+
+### Pattern 2: Seeded Test Data
+
+```csharp
+[Fact]
+public async Task GetOrders_ReturnsUserOrders()
+{
+    // Arrange - seed database
+    await SeedTestData(new[]
+    {
+        new Order { UserId = "user-123", ProductId = "PROD-1" },
+        new Order { UserId = "user-123", ProductId = "PROD-2" },
+        new Order { UserId = "user-456", ProductId = "PROD-3" }
+    });
+
+    // Act
+    var client = _fixture.App.CreateHttpClient("api");
+    var response = await client.GetFromJsonAsync<Order[]>("/orders?userId=user-123");
+
+    // Assert
+    Assert.Equal(2, response.Length);
+}
+```
+
+### Pattern 3: Testing Message Queues
+
+```csharp
+[Fact]
+public async Task OrderCreated_PublishesEvent_ToServiceBus()
+{
+    var receiver = _serviceBusClient.CreateReceiver("order-events");
+
+    // Create order
+    await httpClient.PostAsJsonAsync("/orders", new Order());
+
+    // Wait for message
+    var message = await receiver.ReceiveMessageAsync(TimeSpan.FromSeconds(5));
+
+    Assert.NotNull(message);
+    var orderEvent = JsonSerializer.Deserialize<OrderCreatedEvent>(message.Body);
+    Assert.Equal("Created", orderEvent.Status);
+}
+```
+
+## E2E Testing
+
+Full workflow tests across multiple services:
+
+```csharp
+[Fact]
+public async Task CompleteOrderFlow_CreateToDelivery()
+{
+    var apiClient = _fixture.App.CreateHttpClient("api");
+    var hubConnection = new HubConnectionBuilder()
+        .WithUrl(_fixture.App.GetEndpoint("hub") + "/hubs/orders")
+        .Build();
+
+    await hubConnection.StartAsync();
+
+    var updates = new List<OrderUpdate>();
+    hubConnection.On<OrderUpdate>("OrderUpdated", update => updates.Add(update));
+
+    // Create order
+    var response = await apiClient.PostAsJsonAsync("/orders", new Order());
+    var order = await response.Content.ReadFromJsonAsync<Order>();
+
+    // Subscribe to updates
+    await hubConnection.InvokeAsync("SubscribeToOrder", order.Id);
+
+    // Wait for all status updates
+    await Task.Delay(TimeSpan.FromSeconds(30));
+
+    Assert.Contains(updates, u => u.Status == "Processing");
+    Assert.Contains(updates, u => u.Status == "Shipped");
+    Assert.Contains(updates, u => u.Status == "Delivered");
+}
+```
+
+## Production-Ready Testing
+
+### Parallel Test Execution
+
+```csharp
+[Collection("Sequential")] // Prevent parallel execution if needed
+public class DatabaseTests
+{
+    // Tests that can't run in parallel
+}
+```
+
+### Test Configuration
+
+```json
+{
+  "Testing": {
+    "DatabaseTimeout": 30,
+    "UseInMemoryDatabase": false,
+    "CleanupAfterTests": true
+  }
+}
+```
+
+### CI/CD Integration
+
+```yaml
+# GitHub Actions
+- name: Run Integration Tests
+  run: |
+    dotnet test --configuration Release \
+      --filter "Category=Integration" \
+      --logger "trx;LogFileName=test-results.trx"
+```
+
+## What's Next?
+
+You now have a complete testing strategy:
+- Unit tests for business logic
+- Integration tests with Aspire's test infrastructure
+- E2E tests for full workflows
+- Patterns for real-world scenarios
+
+---
+
+**Quick Reference:**
+
+```csharp
+// Test AppHost setup
+var builder = await DistributedApplicationTestingBuilder
+    .CreateAsync<Projects.MyApp_AppHost>();
+var app = await builder.BuildAsync();
+await app.StartAsync();
+
+// Create HTTP client
+var client = app.CreateHttpClient("api");
+
+// Make requests
+var response = await client.GetAsync("/orders");
+```
+
+Happy testing!
