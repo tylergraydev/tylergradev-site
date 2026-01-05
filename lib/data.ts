@@ -67,7 +67,7 @@ export const projects: Project[] = [
   {
     title: 'Charleston Coastal Closet',
     description:
-      'A business website for an online clothing reseller. Built as a clean, mobile-friendly storefront to showcase inventory and connect with customers.',
+      'A business website for an online clothing reseller. Features a mobile-friendly storefront with Stripe payment processing to showcase inventory and handle transactions.',
     icon: '👗',
     tech: ['Next.js', 'React', 'Tailwind', 'Stripe', 'Postgres', 'Vercel'],
     links: {
